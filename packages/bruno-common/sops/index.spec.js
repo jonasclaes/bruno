@@ -43,7 +43,13 @@ describe('SOPS provider configuration and public labels', () => {
     await expect(sops.writeRecipientLabels(file, { age1abc: 'AGE-SECRET-KEY-PRIVATE' })).rejects.toThrow(/public/);
     await expect(sops.writeRecipientLabels(file, JSON.parse('{"__proto__":"polluted"}'))).rejects.toThrow();
     await expect(sops.writeSecrets(file, JSON.parse('{"__proto__":"polluted"}'), ['age1abc'])).rejects.toThrow();
-    await expect(sops.writeSecrets(file, { token: { nested: 'not flat' } }, ['age1abc'])).rejects.toThrow(/flat/);
+    await expect(sops.writeSecrets(file, { token: { nested: undefined } }, ['age1abc'])).rejects.toThrow(/JSON-compatible/);
+    await expect(sops.writeSecrets(file, { token: JSON.parse('{"__proto__":"polluted"}') }, ['age1abc'])).rejects.toThrow();
+    await expect(sops.writeSecrets(file, { token: [Infinity] }, ['age1abc'])).rejects.toThrow(/JSON-compatible/);
+    await expect(sops.writeSecrets(file, { 'path[0]': 'unsafe-path' }, ['age1abc'])).rejects.toThrow(/variable name/);
+    const cyclic = {};
+    cyclic.self = cyclic;
+    await expect(sops.writeSecrets(file, { token: cyclic }, ['age1abc'])).rejects.toThrow(/structural limits/);
     expect({}.polluted).toBeUndefined();
     expect(await fs.readdir(directory)).toEqual([]);
   });
@@ -72,6 +78,24 @@ describe('SOPS provider configuration and public labels', () => {
     await expect(sops.getRecipients(file)).rejects.toThrow(/encrypted/);
   });
 
+  test('reads authoritative YAML public metadata without decrypting or interpreting custom tags', async () => {
+    const yamlFile = path.join(directory, 'secrets.yaml');
+    await fs.writeFile(yamlFile, [
+      'token: ENC[AES256_GCM,data:test]',
+      'sops:',
+      '  mac: ENC[AES256_GCM,data:mac]',
+      '  age:',
+      '    - recipient: ssh-ed25519 AAAA',
+      '      enc: |',
+      '        public wrapped data key'
+    ].join('\n'));
+    expect(await sops.getRecipients(yamlFile)).toEqual(['ssh-ed25519 AAAA']);
+    await fs.writeFile(yamlFile, 'token: !!js/function "malicious"\nsops: {}');
+    await expect(sops.getRecipients(yamlFile)).rejects.toThrow(/encrypted/);
+    await fs.writeFile(yamlFile, '__proto__: ENC[data]\nsops:\n  mac: ENC[mac]');
+    await expect(sops.getRecipients(yamlFile)).rejects.toThrow(/encrypted/);
+  });
+
   test('rejects symbolic link destinations without touching the target', async () => {
     if (process.platform === 'win32') return;
     const target = path.join(directory, 'target.json');
@@ -86,6 +110,7 @@ describe('SOPS provider configuration and public labels', () => {
     const original = JSON.stringify(doc);
     await fs.writeFile(file, original);
     await expect(sops.writeSecrets(file, { password_unencrypted: 'never write this' })).rejects.toThrow(/policy/);
+    await expect(sops.writeSecrets(file, { token: { password_unencrypted: 'never write this either' } })).rejects.toThrow(/policy/);
     expect(await fs.readFile(file, 'utf8')).toBe(original);
     expect(await fs.readdir(directory)).toEqual(['secrets.json']);
   });

@@ -8,7 +8,7 @@ jest.mock('@usebruno/common/sops', () => ({
 
 const { hydrateEnvironment, saveEnvironmentSecrets } = require('@usebruno/common/sops');
 const { parseEnvironment } = require('@usebruno/filestore');
-const { loadGlobalEnvironmentFromFile } = require('../../src/utils/environment');
+const { loadGlobalEnvironmentFromFile, loadEnvironments, parseEnvironmentJson } = require('../../src/utils/environment');
 const { persistVariableUpdates } = require('../../src/utils/persist-variables');
 
 describe('CLI SOPS global environments', () => {
@@ -57,7 +57,9 @@ describe('CLI SOPS global environments', () => {
     });
     expect(saveEnvironmentSecrets).toHaveBeenCalledWith(expect.objectContaining({
       variables: expect.arrayContaining([expect.objectContaining({ name: 'auth', secret: true, value: { token: 'rotated' }, dataType: 'object' })])
-    }), directory);
+    }), directory, expect.objectContaining({
+      variables: expect.arrayContaining([expect.objectContaining({ name: 'auth', value: { token: 'decrypted' }, secret: true })])
+    }));
     const content = fs.readFileSync(filePath, 'utf8');
     expect(content).not.toContain('rotated');
     expect(parseEnvironment(content, { format: 'yml' }).secretsProvider.file).toBe('secrets/prod.enc.yaml');
@@ -72,6 +74,19 @@ describe('CLI SOPS global environments', () => {
     expect(saveEnvironmentSecrets.mock.calls[0][0].variables[0].value).toBe(12);
   });
 
+  it('passes previous secret declarations so encrypted storage can remove only owned deleted keys', async () => {
+    const filePath = write('production.yml', 'name: production\nsecretsProvider:\n  type: sops\n  file: secrets/prod.enc.yaml\nvariables:\n  - name: count\n    secret: true\n    type: number\n  - name: host\n    value: old\n');
+    await persistVariableUpdates({ globalEnvironmentVariables: { host: 'new' } }, {
+      globalEnvFile: { path: filePath, format: 'yml', basePath: directory }
+    });
+    const [next, basePath, previous] = saveEnvironmentSecrets.mock.calls[0];
+    expect(basePath).toBe(directory);
+    expect(next.variables.some((variable) => variable.name === 'count')).toBe(false);
+    expect(previous.variables).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'count', secret: true, value: 12 })
+    ]));
+  });
+
   it('fails closed and hides provider diagnostics on encryption failure', async () => {
     const original = 'name: production\nsecretsProvider:\n  type: sops\n  file: secrets/prod.enc.yaml\nvariables:\n  - name: count\n    secret: true\n    type: number\n';
     const filePath = write('production.yml', original);
@@ -80,5 +95,49 @@ describe('CLI SOPS global environments', () => {
       globalEnvFile: { path: filePath, format: 'yml', basePath: directory }
     })).rejects.toMatchObject({ code: 'SOPS_ENVIRONMENT_ERROR', message: 'Failed to persist SOPS environment secrets.' });
     expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
+  });
+
+  it('hydrates typed secrets from a single-environment JSON export and preserves metadata on save', async () => {
+    const secretsProvider = { type: 'sops', file: 'secrets/prod.enc.json' };
+    const filePath = write('global.json', JSON.stringify({
+      name: 'exported', secretsProvider, color: '#abcdef',
+      variables: [{ name: 'count', value: '', secret: true, enabled: true, type: 'text', dataType: 'number' }]
+    }));
+    const loaded = await loadGlobalEnvironmentFromFile({ filePath, basePath: directory });
+    expect(loaded.variables.count).toBe(12);
+    expect(loaded.ownVariables[0].dataType).toBe('number');
+    await persistVariableUpdates({ globalEnvironmentVariables: { count: 99 } }, {
+      globalEnvFile: { path: filePath, format: 'json', basePath: directory }
+    });
+    expect(saveEnvironmentSecrets.mock.calls[0][0].variables[0]).toMatchObject({ secret: true, value: 99, dataType: 'number' });
+    const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    expect(persisted).toMatchObject({ secretsProvider, color: '#abcdef' });
+    expect(persisted.variables[0]).toMatchObject({ secret: true, value: '', dataType: 'number' });
+  });
+
+  it.each(['missing', 'cycle'])('rejects %s global inheritance without logging references', async (mode) => {
+    const filePath = write('global.json', JSON.stringify({ name: 'global', extends: mode === 'cycle' ? 'global' : 'sensitive-parent', variables: [] }));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(loadGlobalEnvironmentFromFile({ filePath, basePath: directory })).rejects.toThrow('Unable to resolve global environment inheritance.');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips encrypted YAML documents in environment discovery without logging ciphertext', async () => {
+    fs.mkdirSync(path.join(directory, 'environments'));
+    write('environments/prod.yml', 'name: production\nvariables: []\n');
+    write('environments/prod.enc.yml', 'token: ENC[AES256_GCM,data:ciphertext]\nsops:\n  mac: ENC[mac]\n');
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const environments = await loadEnvironments(directory, 'yml');
+      expect(environments.map((environment) => environment.name)).toEqual(['prod']);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+    expect(() => parseEnvironmentJson({ sops: {}, variables: [] })).toThrow('Encrypted SOPS documents are not environment descriptors.');
   });
 });

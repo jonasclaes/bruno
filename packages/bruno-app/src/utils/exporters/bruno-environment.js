@@ -1,6 +1,6 @@
 import { buildEnvVariable } from 'utils/environments';
 
-export const exportBrunoEnvironment = async ({ environments, environmentType, filePath, exportFormat = 'folder' }) => {
+export const exportBrunoEnvironment = async ({ environments, environmentType, filePath, exportFormat = 'folder', workspacePath }) => {
   try {
     const { ipcRenderer } = window;
 
@@ -17,7 +17,8 @@ export const exportBrunoEnvironment = async ({ environments, environmentType, fi
       environmentType,
       format: 'json',
       filePath,
-      exportFormat
+      exportFormat,
+      ...(workspacePath ? { workspacePath } : {})
     });
   } catch (error) {
     console.error(`Error exporting ${environmentType} environment as .json:`, error);

@@ -99,7 +99,7 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
       const values = existing
         ? await sops.readSecrets(resolved)
         : Object.fromEntries((environment.variables || []).filter((variable) => variable.secret === true)
-          .map((variable) => [variable.name, variable.value]));
+            .map((variable) => [variable.name, variable.value]));
       const variables = (environment.variables || []).map((variable) => {
         if (Object.hasOwn(values, variable.name) && variable.secret !== true) {
           throw new Error('A SOPS secret name conflicts with a non-secret environment variable');
@@ -164,9 +164,9 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
       const sanitizedName = sanitizeName(name);
       const uniqueName = generateUniqueName(sanitizedName, (name) => existingNames.includes(name));
 
-      await globalEnvironmentsStore.addGlobalEnvironment({ uid, name: uniqueName, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider });
+      const created = await globalEnvironmentsStore.addGlobalEnvironment({ uid, name: uniqueName, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider });
 
-      return { name: uniqueName, color, ...(secretsProvider ? { secretsProvider } : {}) };
+      return { name: uniqueName, color, variables: created.variables, ...(created.secretsProvider ? { secretsProvider: created.secretsProvider } : {}) };
     } catch (error) {
       console.error('Error in renderer:create-global-environment:', error);
       return Promise.reject(error);

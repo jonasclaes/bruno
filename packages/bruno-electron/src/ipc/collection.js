@@ -22,6 +22,8 @@ const {
 } = require('@usebruno/filestore');
 const { utils } = require('@usebruno/common');
 const { resolveEnvironmentInheritance } = require('@usebruno/common/utils');
+const { prepareEnvironmentForExport, relativeEnvironmentReference } = require('../utils/environment-export');
+const { resolveSecretsFile } = require('../utils/sops');
 const brunoConverters = require('@usebruno/converters');
 const { postmanToBruno } = brunoConverters;
 const { cookiesStore } = require('../store/cookies');
@@ -1018,7 +1020,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   });
 
   // Generic environment export handler
-  ipcMain.handle('renderer:export-environment', async (event, { environments, environmentType, filePath, exportFormat = 'folder' }) => {
+  ipcMain.handle('renderer:export-environment', async (event, { environments, environmentType, filePath, workspacePath, exportFormat = 'folder' }) => {
     try {
       if (!filePath || typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
         throw new Error('Export path must be an absolute directory path');
@@ -1029,6 +1031,9 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       if (environmentType !== 'collection' && environmentType !== 'global') {
         throw new Error(`Unsupported environment type: ${environmentType}`);
       }
+      environments = await Promise.all(environments.map((environment) => prepareEnvironmentForExport(
+        environment, workspacePath, { preserveReferences: exportFormat !== 'yaml-descriptor' }
+      )));
 
       const { app } = require('electron');
       const appVersion = app?.getVersion() || '2.0.0';
@@ -1039,6 +1044,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         variables: environment.variables,
         color: environment.color ?? undefined,
         extends: environment.extends ?? undefined,
+        ...(environment.secretsProvider ? { secretsProvider: environment.secretsProvider } : {}),
         info: {
           type: 'bruno-environment',
           exportedAt: new Date().toISOString(),
@@ -1046,7 +1052,19 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         }
       });
 
-      if (exportFormat === 'folder') {
+      if (exportFormat === 'yaml-descriptor') {
+        resolveSecretsFile(path.join(filePath, 'environment.yml'));
+        const filePaths = [];
+        for (const environment of environments) {
+          const baseFileName = environment.name ? `${environment.name.replace(/[^a-zA-Z0-9-_]/g, '_')}` : 'environment';
+          const uniqueFileName = generateUniqueName(baseFileName, (name) => fs.existsSync(path.join(filePath, `${name}.yml`)));
+          const fullPath = path.join(filePath, `${uniqueFileName}.yml`);
+          const descriptor = relativeEnvironmentReference(environment, filePath);
+          await writeFile(fullPath, await stringifyEnvironment(descriptor, { format: 'yml' }));
+          filePaths.push(fullPath);
+        }
+        return { filePaths };
+      } else if (exportFormat === 'folder') {
         // separate environment json files in folder
         const baseFolderName = `bruno-${environmentType}-environments`;
         const uniqueFolderName = generateUniqueName(baseFolderName, (name) => fs.existsSync(path.join(filePath, name)));

@@ -58,4 +58,30 @@ get {
     expect(result.stderr).toContain('Use either --global-env or --global-env-file');
     expect(requests).toBe(0);
   });
+
+  it('uses a Bruno single-environment JSON export without requiring a workspace', async () => {
+    descriptor = path.join(directory, 'global.json');
+    fs.writeFileSync(descriptor, JSON.stringify({ name: 'portable', variables: [{ name: 'token', value: 'plain', enabled: true }] }));
+    const result = await runCli(['run', 'request.bru', '--global-env-file', descriptor, '--sandbox', 'developer', '--noproxy'], directory);
+    expect(result.code).toBe(0);
+    expect(requests).toBe(1);
+  });
+
+  it('rejects broken JSON inheritance without printing parent references or sending requests', async () => {
+    descriptor = path.join(directory, 'global.json');
+    fs.writeFileSync(descriptor, JSON.stringify({ name: 'portable', extends: 'sensitive-parent', variables: [] }));
+    const result = await runCli(['run', 'request.bru', '--global-env-file', descriptor, '--sandbox', 'developer', '--noproxy'], directory);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('Failed to load global environment');
+    expect(result.stderr).not.toContain('sensitive-parent');
+    expect(requests).toBe(0);
+  });
+
+  it('rejects multi-environment JSON wrappers', async () => {
+    descriptor = path.join(directory, 'global.json');
+    fs.writeFileSync(descriptor, JSON.stringify({ environments: [{ name: 'portable', variables: [] }] }));
+    const result = await runCli(['run', 'request.bru', '--global-env-file', descriptor, '--sandbox', 'developer', '--noproxy'], directory);
+    expect(result.code).not.toBe(0);
+    expect(requests).toBe(0);
+  });
 });

@@ -120,7 +120,7 @@ const builder = async (yargs) => {
       type: 'string'
     })
     .option('global-env-file', {
-      describe: 'Path to a repository-backed global environment YAML descriptor (SOPS paths are relative to its directory)',
+      describe: 'Path to a repository-backed global environment YAML or single-environment JSON descriptor (SOPS paths are relative to its directory)',
       type: 'string'
     })
     .option('workspace-path', {
@@ -553,8 +553,9 @@ const handler = async function (argv) {
     }
     if (globalEnvFile) {
       const filePath = path.resolve(globalEnvFile);
-      if (!['.yml', '.yaml'].includes(path.extname(filePath).toLowerCase())) {
-        console.error(chalk.red('--global-env-file requires a YAML environment descriptor.'));
+      const extension = path.extname(filePath).toLowerCase();
+      if (!['.yml', '.yaml', '.json'].includes(extension)) {
+        console.error(chalk.red('--global-env-file requires a YAML or single-environment JSON descriptor.'));
         process.exit(constants.EXIT_STATUS.ERROR_INVALID_FILE);
       }
       try {
@@ -562,7 +563,7 @@ const handler = async function (argv) {
         const loaded = await loadGlobalEnvironmentFromFile({ filePath, basePath });
         globalEnvVars = loaded.variables;
         globalEnvFileDescriptor = {
-          path: filePath, format: 'yml', basePath, inheritedEnvironmentVariables: loaded.inheritedVariables
+          path: filePath, format: extension === '.json' ? 'json' : 'yml', basePath, inheritedEnvironmentVariables: loaded.inheritedVariables
         };
       } catch {
         console.error(chalk.red('Failed to load global environment. Check its descriptor and SOPS configuration.'));

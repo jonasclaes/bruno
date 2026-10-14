@@ -70,6 +70,9 @@ class GlobalEnvironmentsManager {
       }
     });
 
+    if (environment.secretsProvider && !isSopsEnvironment(environment)) {
+      throw Object.assign(new Error('Unsupported secrets provider'), { code: 'SOPS_ERROR' });
+    }
     if (isSopsEnvironment(environment)) {
       return hydrateEnvironment(environment, workspacePath);
     }
@@ -144,7 +147,7 @@ class GlobalEnvironmentsManager {
         throw new Error(`Environment "${name}" already exists`);
       }
 
-      const environment = {
+      let environment = {
         name: name,
         variables: variables || [],
         color
@@ -158,7 +161,7 @@ class GlobalEnvironmentsManager {
       }
 
       if (isSopsEnvironment(environment)) {
-        await saveEnvironmentSecrets(environment, workspacePath);
+        environment = await hydrateEnvironment(environment, workspacePath);
       } else if (this.envHasSecrets(environment)) {
         environmentSecretsStore.storeEnvSecrets(workspacePath, environment);
       }
@@ -169,7 +172,7 @@ class GlobalEnvironmentsManager {
       return {
         uid: generateUidBasedOnHash(environmentFilePath),
         name,
-        variables,
+        variables: environment.variables,
         color,
         ...(environment.secretsProvider ? { secretsProvider: environment.secretsProvider } : {})
       };
@@ -222,7 +225,7 @@ class GlobalEnvironmentsManager {
         }
 
         if (isSopsEnvironment(environment)) {
-          if (!skipSecretsWrite) await saveEnvironmentSecrets(environment, workspacePath);
+          if (!skipSecretsWrite) await saveEnvironmentSecrets(environment, workspacePath, savedEnvironment);
         } else if (this.envHasSecrets(environment)) {
           environmentSecretsStore.storeEnvSecrets(workspacePath, environment);
         }

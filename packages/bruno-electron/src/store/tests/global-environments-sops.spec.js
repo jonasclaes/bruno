@@ -46,7 +46,7 @@ describe('app-local SOPS environments', () => {
     expect(mockData.environments[0].secretsProvider).toEqual(provider);
     const [env] = await store.getGlobalEnvironments();
     expect(env.variables[0]).toMatchObject({ value: 42, secret: true, dataType: 'number' });
-    expect(sops.saveEnvironmentSecrets).toHaveBeenCalled();
+    expect(sops.saveEnvironmentSecrets).not.toHaveBeenCalled();
     expect(encryptStringSafe).not.toHaveBeenCalled();
     expect(decryptStringSafe).not.toHaveBeenCalled();
   });
@@ -104,5 +104,85 @@ describe('app-local SOPS environments', () => {
       environmentUid: dev, variables: [], secretsProvider: null
     })).rejects.toThrow('cannot be disabled');
     expect(mockData.environments[0].secretsProvider).toEqual(provider);
+  });
+
+  it('fails closed for malformed persisted provider configurations instead of dropping them or falling back locally', async () => {
+    mockData.environments = [{
+      uid: dev, name: 'Dev', variables: [], secretsProvider: { type: 'unknown', file }
+    }];
+    await expect(store.getGlobalEnvironments()).rejects.toThrow('Invalid SOPS environment configuration');
+    expect(mockData.environments).toHaveLength(1);
+    expect(encryptStringSafe).not.toHaveBeenCalled();
+    expect(decryptStringSafe).not.toHaveBeenCalled();
+  });
+
+  it('hydrates imported blank secret values from the existing authoritative file without writing it', async () => {
+    const created = await store.addGlobalEnvironment({
+      uid: dev, name: 'Imported', secretsProvider: provider,
+      variables: [{ uid: 'v'.repeat(21), name: 'token', value: '', secret: true, enabled: true, type: 'text', dataType: 'number' }]
+    });
+    expect(created.variables[0].value).toBe(42);
+    expect(mockData.environments[0].variables[0].value).toBe('');
+    expect(sops.saveEnvironmentSecrets).not.toHaveBeenCalled();
+    await store.saveGlobalEnvironment({ environmentUid: dev, variables: created.variables });
+    expect(sops.saveEnvironmentSecrets).toHaveBeenCalled();
+  });
+
+  it('refuses importing an unavailable provider rather than saving blank secrets', async () => {
+    sops.hydrateEnvironment.mockRejectedValueOnce(new Error('Missing file or declared key'));
+    await expect(store.addGlobalEnvironment({
+      uid: dev, name: 'Unavailable', variables: [], secretsProvider: provider
+    })).rejects.toThrow('Unable to load SOPS');
+    expect(mockData.environments).toBeUndefined();
+    expect(sops.saveEnvironmentSecrets).not.toHaveBeenCalled();
+  });
+
+  it('rejects unavailable identities without wiping other environments or saving editable blanks', async () => {
+    await store.addGlobalEnvironment({ uid: local, name: 'Local', variables: [] });
+    await store.addGlobalEnvironment({
+      uid: dev, name: 'Protected', secretsProvider: provider,
+      variables: [{ uid: 'v'.repeat(21), name: 'token', value: '', secret: true, enabled: true, type: 'text', dataType: 'number' }]
+    });
+    const stored = structuredClone(mockData.environments);
+    sops.hydrateEnvironment.mockRejectedValueOnce(new Error('Identity unavailable'));
+    await expect(store.getGlobalEnvironments()).rejects.toThrow('Unable to load SOPS');
+    expect(mockData.environments).toEqual(stored);
+    sops.hydrateEnvironment.mockRejectedValueOnce(new Error('Identity unavailable'));
+    await expect(store.saveGlobalEnvironment({ environmentUid: local, variables: [] })).rejects.toThrow('Unable to load SOPS');
+    expect(mockData.environments).toEqual(stored);
+    expect(sops.saveEnvironmentSecrets).not.toHaveBeenCalled();
+    const loaded = await store.getGlobalEnvironments();
+    expect(loaded).toHaveLength(2);
+    expect(loaded.find((env) => env.uid === dev).variables[0].value).toBe(42);
+  });
+
+  it('persists deletion of the last secret without disabling its provider', async () => {
+    await store.addGlobalEnvironment({
+      uid: dev, name: 'Protected', secretsProvider: provider,
+      variables: [{ uid: 'v'.repeat(21), name: 'token', value: '', secret: true, enabled: true, type: 'text' }]
+    });
+    await store.saveGlobalEnvironment({ environmentUid: dev, variables: [] });
+    expect(sops.saveEnvironmentSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      secretsProvider: provider, variables: []
+    }), undefined, expect.objectContaining({
+      secretsProvider: provider, variables: [expect.objectContaining({ name: 'token', secret: true })]
+    }));
+    expect(mockData.environments[0]).toMatchObject({ secretsProvider: provider, variables: [] });
+  });
+
+  it('passes the original secret declarations when an existing secret is made non-secret', async () => {
+    await store.addGlobalEnvironment({
+      uid: dev, name: 'Protected', secretsProvider: provider,
+      variables: [{ uid: 'v'.repeat(21), name: 'token', value: '', secret: true, enabled: true, type: 'text' }]
+    });
+    await store.saveGlobalEnvironment({
+      environmentUid: dev,
+      variables: [{ uid: 'v'.repeat(21), name: 'token', value: 'public', secret: false, enabled: true, type: 'text' }]
+    });
+    expect(sops.saveEnvironmentSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      variables: [expect.objectContaining({ name: 'token', secret: false, value: 'public' })]
+    }), undefined, expect.objectContaining({
+      variables: [expect.objectContaining({ name: 'token', secret: true })]
+    }));
   });
 });

@@ -495,8 +495,8 @@ describe('globalEnvironmentsUpdateEvent — draft-aware merge', () => {
 });
 
 describe('addGlobalEnvironment — inheritance', () => {
-  const addEnvironment = async (payload) => {
-    const invoke = jest.fn().mockResolvedValue({});
+  const addEnvironment = async (payload, result = {}) => {
+    const invoke = jest.fn().mockResolvedValue(result);
     window.ipcRenderer = { invoke };
     const store = createStore();
 
@@ -526,6 +526,14 @@ describe('addGlobalEnvironment — inheritance', () => {
     const { createArgs, added } = await addEnvironment({ name: 'shared', variables: [], secretsProvider });
     expect(createArgs.secretsProvider).toEqual(secretsProvider);
     expect(added.secretsProvider).toEqual(secretsProvider);
+  });
+
+  test('uses the normalized SOPS reference returned by persistence', async () => {
+    const persisted = { type: 'sops', file: 'secrets/shared.json' };
+    const { added } = await addEnvironment({
+      name: 'shared', variables: [], secretsProvider: { type: 'sops', file: '/repo/secrets/shared.json' }
+    }, { secretsProvider: persisted });
+    expect(added.secretsProvider).toEqual(persisted);
   });
 });
 

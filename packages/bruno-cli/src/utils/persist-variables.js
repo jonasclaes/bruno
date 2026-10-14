@@ -398,6 +398,32 @@ const persistEnvFile = (envFile, scriptVars, options = {}) => {
   };
   if (!fs.existsSync(filePath)) return;
 
+  const persistSopsEnvironment = async (parsed, existingRaw) => {
+    try {
+      const basePath = envFile.basePath || path.dirname(filePath);
+      const hydrated = await hydrateEnvironment(parsed, basePath);
+      const next = {
+        ...hydrated,
+        variables: mergeScriptVarsIntoEnvList(hydrated.variables || [], scriptVars, {
+          ...mergeOptions,
+          preserveSecretValues: true
+        })
+      };
+      await saveEnvironmentSecrets(next, basePath, hydrated);
+      const content = format === 'json'
+        ? JSON.stringify({
+          ...next,
+          variables: next.variables.map((variable) => variable.secret ? { ...variable, value: '' } : variable)
+        }, null, 2) + '\n'
+        : stringifyEnvironment(next, { format });
+      writeIfChanged(filePath, content, existingRaw);
+    } catch {
+      const error = new Error('Failed to persist SOPS environment secrets.');
+      error.code = 'SOPS_ENVIRONMENT_ERROR';
+      throw error;
+    }
+  };
+
   if (format === 'json') {
     const existingRaw = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(existingRaw);
@@ -405,6 +431,7 @@ const persistEnvFile = (envFile, scriptVars, options = {}) => {
     // CLI doesn't recognize (uid, dataType, custom metadata) survive on entries the script
     // didn't touch — parseEnvironmentJson's normalizer would otherwise strip them.
     parseEnvironmentJson(parsed);
+    if (parsed.secretsProvider !== undefined) return persistSopsEnvironment(parsed, existingRaw);
 
     const rawVariables = Array.isArray(parsed.variables) ? parsed.variables.filter(Boolean) : [];
     const mergedVars = mergeScriptVarsIntoEnvList(rawVariables, scriptVars, mergeOptions);
@@ -420,26 +447,7 @@ const persistEnvFile = (envFile, scriptVars, options = {}) => {
   const sourceForParse = format === 'bru' ? existingRaw.replace(/\r\n/g, '\n') : existingRaw;
   const parsed = parseEnvironment(sourceForParse, { format });
   if (parsed.secretsProvider !== undefined) {
-    return (async () => {
-      try {
-        const basePath = envFile.basePath || path.dirname(filePath);
-        const hydrated = await hydrateEnvironment(parsed, basePath);
-        const next = {
-          ...hydrated,
-          variables: mergeScriptVarsIntoEnvList(hydrated.variables || [], scriptVars, {
-            ...mergeOptions,
-            preserveSecretValues: true
-          })
-        };
-        await saveEnvironmentSecrets(next, basePath);
-        const content = stringifyEnvironment(next, { format });
-        writeIfChanged(filePath, content, existingRaw);
-      } catch {
-        const error = new Error('Failed to persist SOPS environment secrets.');
-        error.code = 'SOPS_ENVIRONMENT_ERROR';
-        throw error;
-      }
-    })();
+    return persistSopsEnvironment(parsed, existingRaw);
   }
   const mergedVars = mergeScriptVarsIntoEnvList(parsed.variables || [], scriptVars, mergeOptions);
   const next = { ...parsed, variables: mergedVars };

@@ -1,3 +1,23 @@
+jest.mock('electron', () => ({ safeStorage: { isEncryptionAvailable: () => false } }));
+jest.mock('@usebruno/node-machine-id', () => ({ machineIdSync: () => 'test-machine-id' }));
+jest.mock('electron-store', () => class {
+  constructor() {
+    this.data = new Map();
+  }
+
+  get(key, fallback) {
+    return structuredClone(this.data.has(key) ? this.data.get(key) : fallback);
+  }
+
+  set(key, value) {
+    this.data.set(key, structuredClone(value));
+  }
+
+  clear() {
+    this.data.clear();
+  }
+});
+
 const { globalEnvironmentsStore } = require('../../src/store/global-environments');
 const { encryptStringSafe } = require('../../src/utils/encryption');
 
@@ -9,7 +29,7 @@ describe('global environment variable type backward compatibility', () => {
     globalEnvironmentsStore.store.clear();
   });
 
-  it('should add type field for existing global environments without type', () => {
+  it('should add type field for existing global environments without type', async () => {
     // Mock global environments without type field
     const mockGlobalEnvironments = [
       {
@@ -38,7 +58,7 @@ describe('global environment variable type backward compatibility', () => {
 
     globalEnvironmentsStore.store.set('environments', mockGlobalEnvironments);
 
-    const processedEnvironments = globalEnvironmentsStore.getGlobalEnvironments();
+    const processedEnvironments = await globalEnvironmentsStore.getGlobalEnvironments();
 
     expect(processedEnvironments).toHaveLength(1);
     expect(processedEnvironments[0].variables).toHaveLength(2);
@@ -75,34 +95,34 @@ describe('global environment variable read-time dataType parsing', () => {
     ]
   });
 
-  const readVar = () => globalEnvironmentsStore.getGlobalEnvironments()[0].variables[0];
+  const readVar = async () => (await globalEnvironmentsStore.getGlobalEnvironments())[0].variables[0];
 
-  it('parses @number string values into JS numbers', () => {
+  it('parses @number string values into JS numbers', async () => {
     globalEnvironmentsStore.store.set('environments', [storedAs('number', '42')]);
-    expect(readVar().value).toBe(42);
+    expect((await readVar()).value).toBe(42);
   });
 
-  it('parses @boolean string values into JS booleans', () => {
+  it('parses @boolean string values into JS booleans', async () => {
     globalEnvironmentsStore.store.set('environments', [storedAs('boolean', 'false')]);
-    expect(readVar().value).toBe(false);
+    expect((await readVar()).value).toBe(false);
   });
 
-  it('parses @object string values via JSON.parse', () => {
+  it('parses @object string values via JSON.parse', async () => {
     globalEnvironmentsStore.store.set('environments', [storedAs('object', '{"a":1}')]);
-    expect(readVar().value).toEqual({ a: 1 });
+    expect((await readVar()).value).toEqual({ a: 1 });
   });
 
-  it('passes string-typed values through unchanged', () => {
+  it('passes string-typed values through unchanged', async () => {
     globalEnvironmentsStore.store.set('environments', [storedAs('string', 'hello')]);
-    expect(readVar().value).toBe('hello');
+    expect((await readVar()).value).toBe('hello');
   });
 
-  it('is idempotent — already-coerced values stay put', () => {
+  it('is idempotent — already-coerced values stay put', async () => {
     globalEnvironmentsStore.store.set('environments', [storedAs('number', 42)]);
-    expect(readVar().value).toBe(42);
+    expect((await readVar()).value).toBe(42);
   });
 
-  it('parses secret variables by their dataType after decryption', () => {
+  it('parses secret variables by their dataType after decryption', async () => {
     // Encrypt so the decryption round-trip yields '42', which is then coerced.
     const encrypted = encryptStringSafe('42').value;
     const env = {
@@ -121,6 +141,6 @@ describe('global environment variable read-time dataType parsing', () => {
       ]
     };
     globalEnvironmentsStore.store.set('environments', [env]);
-    expect(readVar().value).toBe(42);
+    expect((await readVar()).value).toBe(42);
   });
 });

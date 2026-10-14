@@ -2,6 +2,9 @@ import parseEnvironment from './parseEnvironment';
 import stringifyEnvironment from './stringifyEnvironment';
 
 describe('SOPS environment descriptors', () => {
+  it('rejects ciphertext documents rather than importing a ghost environment', () => {
+    expect(() => parseEnvironment('token: ENC[AES256_GCM,data:ciphertext]\nsops:\n  mac: ENC[mac]\n')).toThrow('Encrypted SOPS documents are not environment descriptors.');
+  });
   it('round-trips the provider, inheritance and typed secret without its plaintext', () => {
     const source = `name: production
 extends: base

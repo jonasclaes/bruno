@@ -172,7 +172,8 @@ export const addGlobalEnvironment = ({ name, variables = [], color, secretsProvi
         const finalName = result?.name || name;
         const finalVariables = result?.variables || variables;
         const finalColor = result?.color || color;
-        dispatch(_addGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, color: finalColor, secretsProvider, extends: inheritedGlobalEnvironmentName }));
+        const finalProvider = result?.secretsProvider || secretsProvider;
+        dispatch(_addGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, color: finalColor, secretsProvider: finalProvider, extends: inheritedGlobalEnvironmentName }));
         return finalUid;
       })
       .then((finalUid) => dispatch(selectGlobalEnvironment({ environmentUid: finalUid })))
@@ -202,7 +203,8 @@ export const copyGlobalEnvironment = ({ name, environmentUid: baseEnvUid }) => (
         const finalUid = result?.uid || uid;
         const finalName = result?.name || name;
         const finalVariables = result?.variables || baseEnv.variables;
-        dispatch(_copyGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, secretsProvider: baseEnv.secretsProvider, extends: inheritedGlobalEnvironmentName }));
+        const finalProvider = result?.secretsProvider || baseEnv.secretsProvider;
+        dispatch(_copyGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, secretsProvider: finalProvider, extends: inheritedGlobalEnvironmentName }));
       })
       .then(resolve)
       .catch(reject);

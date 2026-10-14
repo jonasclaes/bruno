@@ -29,6 +29,9 @@ class GlobalEnvironmentsStore {
         environmentSchema.validateSync(env);
         return true;
       } catch (error) {
+        if (env?.secretsProvider) {
+          throw Object.assign(new Error('Invalid SOPS environment configuration'), { code: 'SOPS_ERROR' });
+        }
         console.error('Invalid global environment');
         return false;
       }
@@ -127,12 +130,13 @@ class GlobalEnvironmentsStore {
     this.store.set('activeGlobalEnvironmentUidByWorkspace', mapping);
   }
 
-  async setGlobalEnvironments(globalEnvironments, saveSecretsFor) {
+  async setGlobalEnvironments(globalEnvironments, saveSecretsFor, previousEnvironments = this.getStoredGlobalEnvironments()) {
     globalEnvironments = this.filterValidEnvironments(globalEnvironments);
 
     for (const environment of globalEnvironments) {
       if (saveSecretsFor === undefined || saveSecretsFor.includes(environment.uid)) {
-        await saveEnvironmentSecrets(environment);
+        const previousEnvironment = previousEnvironments.find((previous) => previous.uid === environment.uid);
+        await saveEnvironmentSecrets(environment, undefined, previousEnvironment);
       }
     }
     globalEnvironments = this.encryptGlobalEnvironmentVariables({ globalEnvironments });
@@ -145,7 +149,7 @@ class GlobalEnvironmentsStore {
     if (existingEnvironment) {
       throw new Error('Environment with the same name already exists');
     }
-    globalEnvironments.push({
+    const environment = await hydrateEnvironment({
       uid,
       name,
       variables,
@@ -153,12 +157,15 @@ class GlobalEnvironmentsStore {
       extends: inheritedGlobalEnvironmentName,
       ...(secretsProvider ? { secretsProvider: normalizeSecretsProvider(secretsProvider) } : {})
     });
-    await this.setGlobalEnvironments(globalEnvironments, [uid]);
+    globalEnvironments.push(environment);
+    await this.setGlobalEnvironments(globalEnvironments, isSopsEnvironment(environment) ? [] : [uid]);
+    return environment;
   }
 
   async saveGlobalEnvironment({ environmentUid: globalEnvironmentUid, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider, skipSecretsWrite = false }) {
     let globalEnvironments = await this.getGlobalEnvironments();
     const environment = globalEnvironments.find((env) => env?.uid == globalEnvironmentUid);
+    const previousEnvironment = environment ? _.cloneDeep(environment) : undefined;
     globalEnvironments = globalEnvironments.filter((env) => env?.uid !== globalEnvironmentUid);
     if (environment) {
       if (variables !== undefined) environment.variables = variables;
@@ -179,7 +186,7 @@ class GlobalEnvironmentsStore {
     }
     if (!environment) throw new Error('Global environment not found');
     globalEnvironments.push(environment);
-    await this.setGlobalEnvironments(globalEnvironments, skipSecretsWrite ? [] : [globalEnvironmentUid]);
+    await this.setGlobalEnvironments(globalEnvironments, skipSecretsWrite ? [] : [globalEnvironmentUid], [previousEnvironment]);
   }
 
   async renameGlobalEnvironment({ environmentUid: globalEnvironmentUid, name }) {
@@ -201,7 +208,7 @@ class GlobalEnvironmentsStore {
 
   async copyGlobalEnvironment({ uid, name, variables, secretsProvider, color, extends: inheritedGlobalEnvironmentName }) {
     let globalEnvironments = await this.getGlobalEnvironments();
-    globalEnvironments.push({
+    const environment = await hydrateEnvironment({
       uid,
       name,
       variables,
@@ -209,7 +216,9 @@ class GlobalEnvironmentsStore {
       extends: inheritedGlobalEnvironmentName,
       ...(secretsProvider ? { secretsProvider: normalizeSecretsProvider(secretsProvider) } : {})
     });
-    await this.setGlobalEnvironments(globalEnvironments, [uid]);
+    globalEnvironments.push(environment);
+    await this.setGlobalEnvironments(globalEnvironments, isSopsEnvironment(environment) ? [] : [uid]);
+    return environment;
   }
 
   selectGlobalEnvironment({ environmentUid: globalEnvironmentUid }) {

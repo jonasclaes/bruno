@@ -1,4 +1,4 @@
-export type SecretValue = string | number | boolean | null;
+export type SecretValue = string | number | boolean | null | SecretValue[] | { [key: string]: SecretValue };
 export type SecretsProvider = { type: 'sops'; file: string };
 export type EnvironmentVariable = {
   name: string; value?: SecretValue; secret?: boolean; enabled?: boolean; [key: string]: unknown;

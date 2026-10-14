@@ -170,12 +170,49 @@ describe('workspace environments - saveGlobalEnvironment', () => {
     });
     const { hydrateEnvironment } = require('@usebruno/common/sops');
     hydrateEnvironment.mockRejectedValueOnce(new Error('private details must not be logged'));
+    const environmentsDir = path.join(workspacePath, 'environments');
+    const filesBefore = Object.fromEntries(fs.readdirSync(environmentsDir).map((file) => [
+      file, fs.readFileSync(path.join(environmentsDir, file), 'utf8')
+    ]));
     const logger = jest.spyOn(console, 'error').mockImplementation(() => {});
     try {
       await expect(manager.getGlobalEnvironments(workspacePath)).rejects.toThrow('Unable to load SOPS');
       expect(JSON.stringify(logger.mock.calls)).not.toContain('private details');
+      expect(Object.fromEntries(fs.readdirSync(environmentsDir).map((file) => [
+        file, fs.readFileSync(path.join(environmentsDir, file), 'utf8')
+      ]))).toEqual(filesBefore);
     } finally {
       logger.mockRestore();
     }
+  });
+
+  it('imports blank secret declarations from the authoritative file without modifying its values', async () => {
+    const sops = require('@usebruno/common/sops');
+    sops.saveEnvironmentSecrets.mockClear();
+    const created = await manager.createGlobalEnvironment(workspacePath, {
+      name: 'ImportedSops',
+      secretsProvider: { type: 'sops', file: 'secrets.yaml' },
+      variables: [{ name: 'token', value: '', secret: true, dataType: 'number', enabled: true }]
+    });
+    expect(created.variables[0].value).toBe(7);
+    expect(sops.saveEnvironmentSecrets).not.toHaveBeenCalled();
+  });
+
+  it('saves an empty secret map when the last workspace secret is deleted', async () => {
+    const { uid } = await manager.createGlobalEnvironment(workspacePath, {
+      name: 'EmptySops',
+      secretsProvider: { type: 'sops', file: 'secrets.yaml' },
+      variables: [{ name: 'token', value: '', secret: true, enabled: true }]
+    });
+    const sops = require('@usebruno/common/sops');
+    sops.saveEnvironmentSecrets.mockClear();
+    await manager.saveGlobalEnvironment(workspacePath, { environmentUid: uid, variables: [] });
+    expect(sops.saveEnvironmentSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      secretsProvider: { type: 'sops', file: 'secrets.yaml' }, variables: []
+    }), workspacePath, expect.objectContaining({
+      secretsProvider: { type: 'sops', file: 'secrets.yaml' },
+      variables: [expect.objectContaining({ name: 'token', secret: true })]
+    }));
+    expect((await findEnvironment('EmptySops')).secretsProvider).toEqual({ type: 'sops', file: 'secrets.yaml' });
   });
 });

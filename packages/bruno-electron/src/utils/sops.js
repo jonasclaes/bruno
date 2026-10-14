@@ -44,16 +44,26 @@ const hydrateEnvironment = async (environment, workspacePath) => {
   if (!isSopsEnvironment(environment)) return environment;
   try {
     const secretsProvider = normalizeSecretsProvider(environment.secretsProvider, workspacePath);
-    return await sops.hydrateEnvironment({ ...environment, secretsProvider }, workspacePath);
+    const hydrated = await sops.hydrateEnvironment({ ...environment, secretsProvider }, workspacePath);
+    return {
+      ...environment,
+      secretsProvider,
+      variables: (environment.variables || []).map((variable) => {
+        if (variable.secret !== true) return { ...variable };
+        const secret = hydrated.variables.find((value) => value.name === variable.name && value.secret === true);
+        if (!secret) throw new Error('SOPS secret is missing');
+        return { ...variable, value: secret.value };
+      })
+    };
   } catch (error) {
     throw Object.assign(new Error('Unable to load SOPS environment secrets'), { code: 'SOPS_ERROR' });
   }
 };
 
-const saveEnvironmentSecrets = async (environment, workspacePath) => {
+const saveEnvironmentSecrets = async (environment, workspacePath, previousEnvironment) => {
   if (!isSopsEnvironment(environment)) return environment;
   environment.secretsProvider = normalizeSecretsProvider(environment.secretsProvider, workspacePath);
-  await sops.saveEnvironmentSecrets(environment, workspacePath);
+  await sops.saveEnvironmentSecrets(environment, workspacePath, previousEnvironment);
   return environment;
 };
 

@@ -36,6 +36,8 @@
     "api-scripting"
   ],
   "scripts": {
+    "prepack": "npm run prepack --workspace=@usebruno/common && node ../../scripts/prepare-cli-sops.js",
+    "postpack": "node ../../scripts/prepare-cli-sops.js --clean",
     "test": "node --experimental-vm-modules $(npx which jest)",
     "test:ci": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js"
   },
@@ -45,6 +47,9 @@
     "readme.md",
     "changelog.md",
     "package.json"
+  ],
+  "bundledDependencies": [
+    "@usebruno/common"
   ],
   "dependencies": {
     "@aws-sdk/credential-providers": "3.1019.0",

@@ -3,6 +3,7 @@ const { existsSync } = require('node:fs');
 const path = require('node:path');
 const { generateKeyPairSync, randomUUID } = require('node:crypto');
 const sops = require('./index');
+const yaml = require('js-yaml');
 
 // Test-only identities stay in memory; neither identities nor plaintext touch disk.
 function bech32(hrp, bytes) {
@@ -75,6 +76,68 @@ integration('official bundled SOPS integration', () => {
     expect(await fs.readdir(directory)).toEqual(['dev.sops.json']);
   });
 
+  test('creates and updates standard encrypted YAML while preserving typed values and recipient metadata', async () => {
+    file = path.join(directory, 'dev.sops.yaml');
+    await sops.writeSecrets(file, { token: 'YAML-SECRET', count: 5, enabled: false, missing: null }, [first.recipient]);
+    const original = await fs.readFile(file, 'utf8');
+    expect(original.trimStart()).not.toMatch(/^\{/);
+    expect(original).not.toContain('YAML-SECRET');
+    expect(await sops.readSecrets(file)).toEqual({ token: 'YAML-SECRET', count: 5, enabled: false, missing: null });
+    const recipients = yaml.load(original).sops.age;
+    await sops.writeSecrets(file, { token: 'updated', count: 9 });
+    expect(yaml.load(await fs.readFile(file, 'utf8')).sops.age).toEqual(recipients);
+    expect(await sops.readSecrets(file)).toEqual({ token: 'updated', count: 9 });
+    await sops.updateRecipients(file, [first.recipient, second.recipient]);
+    process.env.SOPS_AGE_KEY = second.key;
+    expect(await sops.getRecipients(file)).toEqual([first.recipient, second.recipient]);
+    expect(await sops.readSecrets(file)).toEqual({ token: 'updated', count: 9 });
+  });
+
+  test.each(['json', 'yaml'])('preserves nested JSON-compatible object and array values in %s secrets', async (extension) => {
+    const phase = (name, operation) => operation.catch((error) => {
+      error.message = `${name}: ${error.message}`;
+      throw error;
+    });
+    file = path.join(directory, `objects.sops.${extension}`);
+    const values = {
+      object: { credentials: { password: 'NESTED-SECRET', retries: 3 }, active: false, sops: 'nested-value' },
+      array: ['ARRAY-SECRET', 7, true, null, { password: 'another-secret' }],
+      empty: {}
+    };
+    await phase('create', sops.writeSecrets(file, values, [first.recipient]));
+    expect(await phase('read', sops.readSecrets(file))).toEqual(values);
+    const encrypted = await fs.readFile(file, 'utf8');
+    expect(encrypted).not.toContain('NESTED-SECRET');
+    expect(encrypted).not.toContain('ARRAY-SECRET');
+    const env = {
+      secretsProvider: { type: 'sops', file },
+      variables: [
+        { name: 'object', value: {}, secret: true, dataType: 'object' },
+        { name: 'array', value: [], secret: true, dataType: 'array' }
+      ]
+    };
+    const hydrated = await phase('hydrate', sops.hydrateEnvironment(env));
+    expect(hydrated.variables[0].value).toEqual(values.object);
+    expect(hydrated.variables[1].value).toEqual(values.array);
+    hydrated.variables[1].value = [9, { updated: true }, ['nested-array'], []];
+    await phase('save-object', sops.saveEnvironmentSecrets({ ...hydrated, variables: [hydrated.variables[0]] }));
+    await phase('save-array', sops.saveEnvironmentSecrets({ ...hydrated, variables: [hydrated.variables[1]] }));
+    expect(await sops.readSecrets(file)).toEqual({ ...values, array: [9, { updated: true }, ['nested-array'], []] });
+    await phase('rotate', sops.updateRecipients(file, [second.recipient]));
+    process.env.SOPS_AGE_KEY = second.key;
+    expect((await sops.readSecrets(file)).object).toEqual(values.object);
+    hydrated.variables[1].value = [];
+    await sops.saveEnvironmentSecrets(hydrated);
+    expect((await sops.readSecrets(file)).array).toEqual([]);
+  });
+
+  test('preserves quoted and backslash variable names without SOPS path escaping corruption', async () => {
+    const values = { 'quoted"name': 'one', 'back\\slash': 'two' };
+    await sops.writeSecrets(file, values, [first.recipient]);
+    await sops.writeSecrets(file, { 'quoted"name': 'updated', 'back\\slash': 'updated-again' });
+    expect(await sops.readSecrets(file)).toEqual({ 'quoted"name': 'updated', 'back\\slash': 'updated-again' });
+  });
+
   test('updates and deletes values while preserving wrapped recipients', async () => {
     await sops.writeSecrets(file, { token: 'before', removed: 'old' }, [first.recipient, second.recipient]);
     const before = JSON.parse(await fs.readFile(file, 'utf8')).sops.age;
@@ -122,24 +185,25 @@ integration('official bundled SOPS integration', () => {
   });
 
   test('hydrates and persists only secrets without changing ordinary variables', async () => {
-    await sops.writeSecrets(file, { token: 'private', count: 12 }, [first.recipient]);
+    await sops.writeSecrets(file, { token: 'private', count: 12, unrelated: 'other-environment' }, [first.recipient]);
     const env = {
       secretsProvider: { type: 'sops', file: path.basename(file) },
       variables: [
         { name: 'token', value: '', secret: true, enabled: false },
-        { name: 'public', value: 'ordinary', secret: false, enabled: true }
+        { name: 'public', value: 'ordinary', secret: false, enabled: true },
+        { name: 'count', value: '', secret: true, enabled: true, dataType: 'number', uid: 'existing-uid' }
       ]
     };
     const hydrated = await sops.hydrateEnvironment(env, directory);
     expect(hydrated.variables).toEqual([
       { name: 'token', value: 'private', secret: true, enabled: false },
       { name: 'public', value: 'ordinary', secret: false, enabled: true },
-      { name: 'count', value: 12, secret: true, enabled: true }
+      { name: 'count', value: 12, secret: true, enabled: true, dataType: 'number', uid: 'existing-uid' }
     ]);
     expect(env.variables[0].value).toBe('');
     hydrated.variables[0].value = 'updated';
     await sops.saveEnvironmentSecrets(hydrated, directory);
-    expect(await sops.readSecrets(file)).toEqual({ token: 'updated', count: 12 });
+    expect(await sops.readSecrets(file)).toEqual({ token: 'updated', count: 12, unrelated: 'other-environment' });
   });
 
   test('fails closed if a configured secret is missing', async () => {
@@ -148,6 +212,26 @@ integration('official bundled SOPS integration', () => {
       secretsProvider: { type: 'sops', file },
       variables: [{ name: 'missing', secret: true }]
     })).rejects.toThrow(/missing/);
+  });
+
+  test('environment persistence merges only provided secret values into shared files', async () => {
+    await sops.writeSecrets(file, { first: 'one', second: 'two' }, [first.recipient]);
+    const provider = { type: 'sops', file };
+    await Promise.all([
+      sops.saveEnvironmentSecrets({
+        secretsProvider: provider,
+        variables: [{ name: 'first', value: 'updated-one', secret: true, enabled: false }]
+      }),
+      sops.saveEnvironmentSecrets({
+        secretsProvider: provider,
+        variables: [
+          { name: 'second', value: 'updated-two', secret: true },
+          { name: 'public', value: 'do-not-write', secret: false }
+        ]
+      })
+    ]);
+    expect(await sops.readSecrets(file)).toEqual({ first: 'updated-one', second: 'updated-two' });
+    expect(await fs.readdir(directory)).toEqual(['dev.sops.json']);
   });
 
   test('serializes concurrent writers and never leaves staging or lock files', async () => {

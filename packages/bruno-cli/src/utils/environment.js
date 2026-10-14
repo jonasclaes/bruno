@@ -10,7 +10,10 @@ const { hydrateEnvironment } = require('@usebruno/common/sops');
  * Parse a Bruno JSON environment object and normalize variables
  * Accepts only single environment object: { name?, uid?, variables: [...] }
  */
-const parseEnvironmentJson = (parsed = {}) => {
+const parseEnvironmentJson = (parsed = {}, { preserveInheritance = false } = {}) => {
+  if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'sops')) {
+    throw Object.assign(new Error('Encrypted SOPS documents are not environment descriptors.'), { code: 'SOPS_ENCRYPTED_DOCUMENT' });
+  }
   if (!parsed || !Array.isArray(parsed.variables)) {
     throw new Error('Invalid environment JSON: expected a single environment object with a "variables" array');
   }
@@ -22,19 +25,22 @@ const parseEnvironmentJson = (parsed = {}) => {
       value: variable.value,
       type: variable.type || 'text',
       enabled: variable.enabled !== false,
-      secret: variable.secret || false
+      secret: variable.secret || false,
+      ...(variable.dataType !== undefined ? { dataType: variable.dataType } : {})
     }))
   };
+  if (parsed.secretsProvider !== undefined) normalized.secretsProvider = parsed.secretsProvider;
+  if (preserveInheritance && parsed.extends !== undefined) normalized.extends = parsed.extends;
 
   return normalized;
 };
 
-const parseEnvFile = (filePath) => {
+const parseEnvFile = (filePath, options) => {
   const fileExt = path.extname(filePath).toLowerCase();
   const content = fs.readFileSync(filePath, 'utf8');
 
   if (fileExt === '.json') {
-    return parseEnvironmentJson(JSON.parse(content));
+    return parseEnvironmentJson(JSON.parse(content), options);
   }
 
   const format = ['.yml', '.yaml'].includes(fileExt) ? 'yml' : 'bru';
@@ -58,6 +64,7 @@ const loadEnvironments = async (collectionPath, format) => {
       const name = path.basename(file, path.extname(file));
       environments.push({ ...envJson, name, variables: envJson.variables || [] });
     } catch (err) {
+      if (err.code === 'SOPS_ENCRYPTED_DOCUMENT') continue;
       throw new Error(`environments/${file}: ${err.message}`);
     }
   }
@@ -150,7 +157,7 @@ const loadEnvironmentFromFile = ({ filePath, name, resolveInheritance = true }) 
 // Hydrate each ancestor independently before resolving inheritance; provider references
 // belong to the declaring file, not to the merged child's metadata.
 const loadGlobalEnvironmentFromFile = async ({ filePath, name, basePath }) => {
-  const targetEnvironment = { ...parseEnvFile(filePath), name: name || environmentNameOf(filePath) };
+  const targetEnvironment = { ...parseEnvFile(filePath, { preserveInheritance: true }), name: name || environmentNameOf(filePath) };
   const environments = [];
   const visited = new Set();
   const hydrateChain = async (environment) => {
@@ -162,7 +169,7 @@ const loadGlobalEnvironmentFromFile = async ({ filePath, name, basePath }) => {
       if (typeof parent !== 'string' || path.basename(parent) !== parent || visited.has(parent)) continue;
       const parentPath = path.join(path.dirname(filePath), `${parent}${path.extname(filePath)}`);
       if (!fs.existsSync(parentPath)) continue;
-      const ancestor = { ...parseEnvFile(parentPath), name: parent };
+      const ancestor = { ...parseEnvFile(parentPath, { preserveInheritance: true }), name: parent };
       environments.push(ancestor);
       await hydrateChain(ancestor);
     }
@@ -172,7 +179,9 @@ const loadGlobalEnvironmentFromFile = async ({ filePath, name, basePath }) => {
     environments,
     targetEnvironment
   });
-  warnOnUnresolvedInheritance({ missingInheritedEnvironmentName, cyclicInheritancePath });
+  if (missingInheritedEnvironmentName || cyclicInheritancePath) {
+    throw new Error('Unable to resolve global environment inheritance.');
+  }
   const variables = getEnvVars(environment);
   variables.__name__ = targetEnvironment.name;
   return {

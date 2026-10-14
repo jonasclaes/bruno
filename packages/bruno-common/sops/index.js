@@ -5,30 +5,59 @@ const { constants } = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const yaml = require('js-yaml');
 const release = require('./release.json');
 
 const TIMEOUT = 30000;
 const MAX_BYTES = 16 * 1024 * 1024;
 const forbidden = new Set(['__proto__', 'prototype', 'constructor', 'sops']);
-const format = ['--input-type', 'json', '--output-type', 'json'];
+const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const failure = (message) => Object.assign(new Error(message), { code: 'SOPS_ERROR' });
 
-function safeObject(value, scalarOnly = false) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+const inputType = (text) => text.trimStart().startsWith('{') ? 'json' : 'yaml';
+const documentFormat = (type) => ['--input-type', type, '--output-type', type];
+const treePath = (index) => index.map((part) => {
+  if (typeof part === 'number') return `[${part}]`;
+  if (part.includes('[') || /[\x00-\x1f]/.test(part)) throw failure('Unsupported SOPS variable name.');
+  return `["${part}"]`;
+}).join('');
+
+function jsonValue(value, encrypted = false, depth = 0, budget = { remaining: 100000 }) {
+  if (depth > 32 || --budget.remaining < 0) throw failure('SOPS value exceeds structural limits.');
+  if (value === null) return null;
+  if (typeof value === 'string') {
+    if (encrypted && value !== '' && !value.startsWith('ENC[')) throw failure('SOPS value is not encrypted.');
+    return value;
+  }
+  if (!encrypted && (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)))) return value;
+  if (Array.isArray(value)) return Array.from(value, (item) => jsonValue(item, encrypted, depth + 1, budget));
+  if (value && typeof value === 'object' && [null, Object.prototype].includes(Object.getPrototypeOf(value))) {
+    const result = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (unsafeKeys.has(key) || key.includes('\0')) throw failure('Invalid SOPS object key.');
+      result[key] = jsonValue(item, encrypted, depth + 1, budget);
+    }
+    return result;
+  }
+  throw failure('SOPS secrets must be JSON-compatible values.');
+}
+
+function safeObject(value, recursive = false) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || ![null, Object.prototype].includes(Object.getPrototypeOf(value))) {
     throw failure('SOPS values must be an object.');
   }
   const result = {};
+  const budget = { remaining: 100000 };
   for (const [key, item] of Object.entries(value)) {
     if (forbidden.has(key) || !key || key.includes('\0')) {
       throw failure('Invalid SOPS variable name.');
     }
-    if (item !== null && !['string', 'boolean', 'number'].includes(typeof item)) {
-      if (scalarOnly) throw failure('SOPS secrets must be flat JSON values.');
-      throw failure('Invalid SOPS display label.');
-    }
-    if (typeof item === 'number' && !Number.isFinite(item)) throw failure('Invalid SOPS value.');
-    result[key] = item;
+    if (recursive) treePath([key]);
+    if (!recursive && typeof item !== 'string') throw failure('Invalid SOPS display label.');
+    result[key] = recursive ? jsonValue(item, false, 0, budget) : item;
   }
+  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > MAX_BYTES) throw failure('SOPS values exceed the supported size.');
   return result;
 }
 
@@ -120,22 +149,24 @@ async function run(args, input = '') {
 
 function parseDocument(text) {
   try {
-    const doc = JSON.parse(text);
+    const doc = inputType(text) === 'json'
+      ? JSON.parse(text)
+      : yaml.load(text, { schema: yaml.JSON_SCHEMA, maxDepth: 32 });
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)
         || !Object.hasOwn(doc, 'sops') || !doc.sops || typeof doc.sops !== 'object'
         || typeof doc.sops.mac !== 'string' || !doc.sops.mac.startsWith('ENC[')) {
       throw new Error();
     }
+    const budget = { remaining: 100000 };
     for (const [key, value] of Object.entries(doc)) {
       if (key === 'sops') continue;
-      // SOPS deliberately leaves null and empty strings unchanged.
-      if (forbidden.has(key) || (value !== null && value !== '' && (typeof value !== 'string' || !value.startsWith('ENC[')))) {
-        throw new Error();
-      }
+      if (forbidden.has(key)) throw new Error();
+      // SOPS deliberately leaves null, empty strings and empty containers unchanged.
+      jsonValue(value, true, 0, budget);
     }
     return doc;
   } catch {
-    throw failure('Expected a fully encrypted, flat SOPS JSON file.');
+    throw failure('Expected a fully encrypted SOPS JSON or YAML object.');
   }
 }
 
@@ -150,7 +181,8 @@ async function encryptedDocument(file) {
 async function readSecrets(file) {
   try {
     await encryptedDocument(file);
-    const text = await run(['decrypt', ...format, path.resolve(file)]);
+    const type = inputType(await fs.readFile(file, 'utf8'));
+    const text = await run(['decrypt', '--input-type', type, '--output-type', 'json', path.resolve(file)]);
     return safeObject(JSON.parse(text), true);
   } catch (error) {
     if (error.code === 'SOPS_ERROR') throw error;
@@ -239,21 +271,38 @@ async function existingText(file) {
   }
 }
 
-async function writeSecrets(file, values, recipients) {
+async function writeSecretsWithMode(file, values, recipients, merge) {
   values = safeObject(values, true);
   return withLock(file, async (destination) => {
     const original = await existingText(destination);
+    const type = original === undefined
+      ? (/\.ya?ml$/i.test(destination) ? 'yaml' : 'json')
+      : inputType(original);
+    const outputFormat = documentFormat(type);
     let text;
     if (original === undefined) {
       const list = recipientsList(recipients);
-      text = await run(['encrypt', ...format, '--filename-override', destination,
+      text = await run(['encrypt', '--input-type', 'json', '--output-type', type, '--filename-override', destination,
         '--age', list.join(','), '--unencrypted-suffix', `_${randomUUID()}`], JSON.stringify(values));
     } else {
       const metadata = parseDocument(original).sops;
+      const keys = [];
+      const collectKeys = (value) => {
+        if (!value || typeof value !== 'object') return;
+        if (Array.isArray(value)) {
+          value.forEach(collectKeys);
+          return;
+        }
+        for (const [key, item] of Object.entries(value)) {
+          keys.push(key);
+          collectKeys(item);
+        }
+      };
+      collectKeys(values);
       // Reject selective encryption before SOPS can write any plaintext to staging.
       if (metadata.unencrypted_regex || metadata.encrypted_regex
           || metadata.unencrypted_comment_regex || metadata.encrypted_comment_regex
-          || Object.keys(values).some((key) =>
+          || keys.some((key) =>
             (metadata.unencrypted_suffix && key.endsWith(metadata.unencrypted_suffix))
             || (metadata.encrypted_suffix && !key.endsWith(metadata.encrypted_suffix)))) {
         throw failure('SOPS encryption policy would leave a secret unencrypted.');
@@ -261,14 +310,33 @@ async function writeSecrets(file, values, recipients) {
       const staged = `${destination}.${randomUUID()}.json`;
       try {
         await fs.writeFile(staged, original, { flag: 'wx', mode: 0o600 });
+        const setValue = async (index, value) => {
+          if (Array.isArray(value)) {
+            // SOPS set does not parse a bare JSON array. Build it via indexed
+            // stdin-only inserts; an empty array uses a temporary null element.
+            if (!value.length) {
+              await setValue([...index, 0], null);
+              await run(['unset', ...outputFormat, staged, treePath([...index, 0])]);
+            } else {
+              for (let i = 0; i < value.length; i++) await setValue([...index, i], value[i]);
+            }
+            return;
+          }
+          await run(['set', ...outputFormat, '--value-stdin', staged, treePath(index)], JSON.stringify(value));
+        };
         // set/unset retain the original wrapped data key and recipient metadata.
         for (const [key, value] of Object.entries(values)) {
-          await run(['set', ...format, '--value-stdin', staged, JSON.stringify([key])], JSON.stringify(value));
+          if (Array.isArray(value) && Object.hasOwn(parseDocument(original), key)) {
+            await run(['unset', ...outputFormat, staged, treePath([key])]);
+          }
+          await setValue([key], value);
           parseDocument(await fs.readFile(staged, 'utf8'));
         }
-        for (const key of Object.keys(parseDocument(original))) {
-          if (key !== 'sops' && !Object.hasOwn(values, key)) {
-            await run(['unset', ...format, staged, JSON.stringify([key])]);
+        if (!merge) {
+          for (const key of Object.keys(parseDocument(original))) {
+            if (key !== 'sops' && !Object.hasOwn(values, key)) {
+              await run(['unset', ...outputFormat, staged, treePath([key])]);
+            }
           }
         }
         text = await fs.readFile(staged, 'utf8');
@@ -281,13 +349,17 @@ async function writeSecrets(file, values, recipients) {
   });
 }
 
+async function writeSecrets(file, values, recipients) {
+  return writeSecretsWithMode(file, values, recipients, false);
+}
+
 async function updateRecipients(file, recipients) {
   const list = recipientsList(recipients);
   return withLock(file, async (destination) => {
     const original = await existingText(destination);
     if (original === undefined) throw failure('SOPS secrets file does not exist.');
     const old = metadataRecipients(parseDocument(original));
-    const args = ['rotate', ...format];
+    const args = ['rotate', ...documentFormat(inputType(original))];
     const added = list.filter((key) => !old.includes(key));
     const removed = old.filter((key) => !list.includes(key));
     if (added.length) args.push('--add-age', added.join(','));
@@ -338,11 +410,6 @@ async function hydrateEnvironment(env, basePath) {
     if (!Object.hasOwn(values, variable.name)) throw failure('A configured SOPS secret is missing.');
     return { ...variable, value: values[variable.name] };
   });
-  for (const [name, value] of Object.entries(values)) {
-    if (!variables.some((variable) => variable.name === name && variable.secret === true)) {
-      variables.push({ name, value, enabled: true, secret: true });
-    }
-  }
   return { ...env, variables };
 }
 
@@ -354,7 +421,7 @@ async function saveEnvironmentSecrets(env, basePath) {
     if (typeof variable.name !== 'string' || forbidden.has(variable.name)) throw failure('Invalid SOPS variable name.');
     values[variable.name] = variable.value;
   }
-  await writeSecrets(resolveSecretsPath(env.secretsProvider, basePath), values);
+  await writeSecretsWithMode(resolveSecretsPath(env.secretsProvider, basePath), values, undefined, true);
 }
 
 module.exports = {
