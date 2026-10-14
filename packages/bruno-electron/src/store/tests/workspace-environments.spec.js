@@ -35,6 +35,7 @@ describe('workspace environments - saveGlobalEnvironment', () => {
 
   beforeEach(async () => {
     workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'bruno-workspace-envs-'));
+    fs.mkdirSync(path.join(workspacePath, '.git'));
     manager = new GlobalEnvironmentsManager();
 
     await manager.createGlobalEnvironment(workspacePath, {
