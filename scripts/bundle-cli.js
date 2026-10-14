@@ -9,7 +9,6 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 const CLI_DIR = path.join(ROOT, 'packages', 'bruno-cli');
@@ -63,13 +62,21 @@ for (const [name, { dir }] of Object.entries(workspaces)) {
     tarballMap[name] = filename;
     log(`  ${name} -> ${filename}`);
   } catch (err) {
+    if (name === '@usebruno/common') {
+      throw new Error('Refusing to bundle the CLI without the local common package and verified SOPS binaries.');
+    }
     console.error(err);
     log(`  skip ${name} (${err.message.split('\n')[0]})`);
   }
 }
 
+if (!tarballMap['@usebruno/common']) {
+  throw new Error('The CLI bundle requires the local common package with bundled SOPS.');
+}
+
 log('staging cli...');
-const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'bruno-cli-bundle-'));
+const stage = path.join(OUT_DIR, '.stage');
+fs.mkdirSync(stage, { recursive: true });
 
 const cleanup = () => {
   try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
@@ -89,6 +96,9 @@ for (const tarball of Object.values(tarballMap)) {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(stage, 'package.json'), 'utf8'));
+// Workspace prepack already prepared common and its verified SOPS binaries.
+delete pkg.scripts.prepack;
+delete pkg.scripts.postpack;
 
 for (const dep of Object.keys(pkg.dependencies || {})) {
   if (tarballMap[dep]) {

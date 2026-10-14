@@ -46,6 +46,10 @@ const environmentSchema = Yup.object({
   name: Yup.string().min(1).required('name is required'),
   variables: Yup.array().of(environmentVariablesSchema).required('variables are required'),
   externalSecrets: externalSecretsSchema.nullable().optional(),
+  secretsProvider: Yup.object({
+    type: Yup.string().oneOf(['sops']).required(),
+    file: Yup.string().trim().min(1).required()
+  }).noUnknown(true).strict().optional().default(undefined),
   color: Yup.string().nullable().optional(),
   extends: Yup.mixed()
     .test(

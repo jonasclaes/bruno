@@ -83,6 +83,9 @@ const toBrunoExternalSecrets = (externalSecrets: any): BrunoEnvironment['externa
 const parseEnvironment = (ymlString: string): BrunoEnvironment => {
   try {
     const ocEnvironment: Environment = parseYml(ymlString);
+    if (ocEnvironment && Object.prototype.hasOwnProperty.call(ocEnvironment, 'sops')) {
+      throw Object.assign(new Error('Encrypted SOPS documents are not environment descriptors.'), { code: 'SOPS_ENCRYPTED_DOCUMENT' });
+    }
 
     const brunoEnvironment: BrunoEnvironment = {
       uid: uuid(),
@@ -100,9 +103,13 @@ const parseEnvironment = (ymlString: string): BrunoEnvironment => {
     if (externalSecrets) {
       brunoEnvironment.externalSecrets = externalSecrets;
     }
+    if ((ocEnvironment as any).secretsProvider !== undefined) {
+      brunoEnvironment.secretsProvider = (ocEnvironment as any).secretsProvider;
+    }
 
     return brunoEnvironment;
   } catch (error) {
+    if ((error as any)?.code === 'SOPS_ENCRYPTED_DOCUMENT') throw error;
     console.error('Error parsing environment:', error);
     throw error;
   }

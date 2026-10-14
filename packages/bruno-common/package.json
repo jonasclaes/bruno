@@ -16,6 +16,12 @@
       "import": "./dist/runner/esm/index.js",
       "types": "./dist/runner/index.d.ts"
     },
+    "./sops": {
+      "node": {
+        "types": "./sops/index.d.ts",
+        "default": "./sops/index.js"
+      }
+    },
     "./utils": {
       "require": "./dist/utils/cjs/index.js",
       "import": "./dist/utils/esm/index.js",
@@ -25,6 +31,11 @@
   "files": [
     "dist",
     "src",
+    "sops/index.js",
+    "sops/index.d.ts",
+    "sops/release.json",
+    "sops/NOTICE",
+    "sops/bin",
     "package.json"
   ],
   "scripts": {
@@ -34,9 +45,11 @@
     "prebuild": "npm run clean",
     "build": "rollup -c rollup.config.js",
     "watch": "rollup -c -w",
-    "prepack": "npm run test && npm run build"
+    "prepack": "npm run test && npm run build && node ../../scripts/bundle-sops.js"
   },
-  "dependencies": {},
+  "dependencies": {
+    "js-yaml": "4.3.2"
+  },
   "devDependencies": {
     "@babel/preset-env": "^7.26.9",
     "@babel/preset-typescript": "^7.27.0",

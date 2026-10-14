@@ -3,7 +3,7 @@ import Portal from 'components/Portal/index';
 import Modal from 'components/Modal';
 import { exportBrunoEnvironment } from 'utils/exporters/bruno-environment';
 import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import toast from 'react-hot-toast';
 import { IconAlertTriangle } from '@tabler/icons';
 import { getInheritedEnvironments } from '@usebruno/common/utils';
@@ -12,6 +12,7 @@ import Button from 'ui/Button';
 
 const ExportEnvironmentModal = ({ onClose, environments = [], environmentType }) => {
   const dispatch = useDispatch();
+  const workspacePath = useSelector((state) => state.workspaces?.workspaces?.find((workspace) => workspace.uid === state.workspaces.activeWorkspaceUid)?.pathname);
 
   // Helper function to truncate environment names
   const truncateEnvName = (name) => {
@@ -117,19 +118,24 @@ const ExportEnvironmentModal = ({ onClose, environments = [], environmentType })
 
   const exportFormatOptions = useMemo(() => {
     const isMultiple = selectedCount > 1;
+    const descriptorOptions = environmentType === 'global'
+      ? [{ value: 'yaml-descriptor', label: 'CLI YAML descriptors', description: 'One environment file per environment, with portable encrypted-secret references' }]
+      : [];
 
     if (isMultiple) {
       return [
         { value: 'single-file', label: 'Single JSON file', description: 'All environments in one JSON array' },
-        { value: 'folder', label: 'Separate files in folder', description: 'Each environment as a separate JSON file', disabled: false }
+        { value: 'folder', label: 'Separate files in folder', description: 'Each environment as a separate JSON file', disabled: false },
+        ...descriptorOptions
       ];
     }
 
     return [
       { value: 'single-object', label: 'Single JSON file', description: 'Export as a single environment JSON object' },
-      { value: 'folder', label: 'Separate files in folder', description: 'Each environment as a separate JSON file', disabled: true }
+      { value: 'folder', label: 'Separate files in folder', description: 'Each environment as a separate JSON file', disabled: true },
+      ...descriptorOptions
     ];
-  }, [selectedCount, exportFormat]);
+  }, [selectedCount, environmentType]);
 
   const handleExport = async () => {
     try {
@@ -145,7 +151,7 @@ const ExportEnvironmentModal = ({ onClose, environments = [], environmentType })
         return;
       }
 
-      await exportBrunoEnvironment({ environments: selectedEnvs, environmentType, filePath, exportFormat });
+      await exportBrunoEnvironment({ environments: selectedEnvs, environmentType, filePath, exportFormat, workspacePath: environmentType === 'global' ? workspacePath : undefined });
 
       const successMessage = exportFormat === 'folder'
         ? `Environments exported successfully to bruno-${environmentType}-environments folder`

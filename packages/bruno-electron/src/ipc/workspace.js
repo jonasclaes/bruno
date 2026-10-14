@@ -447,8 +447,8 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
   ipcMain.handle('renderer:create-workspace-environment', async (event, workspacePath, environmentName) => {
     try {
       return await globalEnvironmentsManager.createGlobalEnvironment(workspacePath, {
-        name: environmentName,
-        variables: []
+        ...(typeof environmentName === 'object' ? environmentName : { name: environmentName }),
+        variables: environmentName?.variables || []
       });
     } catch (error) {
       throw error;
@@ -466,6 +466,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
   ipcMain.handle('renderer:import-workspace-environment', async (event, workspacePath, environmentData) => {
     try {
       return await globalEnvironmentsManager.createGlobalEnvironment(workspacePath, {
+        ...environmentData,
         name: environmentData.name || 'Imported Environment',
         variables: environmentData.variables || []
       });
@@ -477,8 +478,9 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
   ipcMain.handle('renderer:update-workspace-environment', async (event, workspacePath, environmentUid, environmentData) => {
     try {
       return await globalEnvironmentsManager.saveGlobalEnvironment(workspacePath, {
+        ...environmentData,
         environmentUid,
-        variables: environmentData.variables || []
+        variables: environmentData.variables
       });
     } catch (error) {
       throw error;
@@ -507,6 +509,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
       // Create new environment with copied variables
       return await globalEnvironmentsManager.createGlobalEnvironment(workspacePath, {
+        ...sourceEnv,
         name: newName,
         variables: sourceEnv.variables || []
       });

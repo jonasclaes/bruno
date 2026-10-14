@@ -104,7 +104,7 @@ class DefaultWorkspaceManager {
    */
   backupGlobalEnvironments() {
     try {
-      const globalEnvironments = globalEnvironmentsStore.getGlobalEnvironments();
+      const globalEnvironments = globalEnvironmentsStore.getStoredGlobalEnvironments();
       const activeUid = globalEnvironmentsStore.getActiveGlobalEnvironmentUid();
 
       if (globalEnvironments && globalEnvironments.length > 0) {
@@ -333,7 +333,7 @@ class DefaultWorkspaceManager {
       // Backup global environments before migrating
       this.backupGlobalEnvironments();
 
-      const globalEnvironments = globalEnvironmentsStore.getGlobalEnvironments();
+      const globalEnvironments = globalEnvironmentsStore.getStoredGlobalEnvironments();
       const activeGlobalEnvironmentUid = globalEnvironmentsStore.getActiveGlobalEnvironmentUid();
 
       if (globalEnvironments && globalEnvironments.length > 0) {
@@ -370,7 +370,8 @@ class DefaultWorkspaceManager {
           const environment = {
             name: env.name,
             variables: env.variables || [],
-            extends: resolvableEnvironmentNames.has(env.extends) ? env.extends : undefined
+            extends: resolvableEnvironmentNames.has(env.extends) ? env.extends : undefined,
+            ...(env.secretsProvider ? { secretsProvider: env.secretsProvider } : {})
           };
           const content = stringifyEnvironment(environment, { format: 'yml' });
           await writeFile(envFilePath, content);
@@ -404,7 +405,7 @@ class DefaultWorkspaceManager {
     const Store = require('electron-store');
     const preferencesStore = new Store({ name: 'preferences' });
     const lastOpenedCollections = preferencesStore.get('lastOpenedCollections', []);
-    const globalEnvironments = globalEnvironmentsStore.getGlobalEnvironments();
+    const globalEnvironments = globalEnvironmentsStore.getStoredGlobalEnvironments();
 
     return lastOpenedCollections.length > 0 || globalEnvironments.length > 0;
   }

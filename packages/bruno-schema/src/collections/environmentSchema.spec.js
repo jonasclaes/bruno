@@ -19,6 +19,24 @@ const buildEnvironment = (overrides = {}) => ({
 });
 
 describe('Environment Schema Validation', () => {
+  describe('secretsProvider', () => {
+    it('preserves SOPS configuration', async () => {
+      const secretsProvider = { type: 'sops', file: 'secrets/prod.enc.yaml' };
+      const validated = await environmentSchema.validate(buildEnvironment({ secretsProvider }));
+      expect(validated.secretsProvider).toEqual(secretsProvider);
+    });
+
+    it.each([
+      { type: 'unknown', file: 'secrets.yaml' },
+      { type: 'sops' },
+      { type: 'sops', file: '' },
+      { type: 'sops', file: '  ' },
+      { type: 'sops', file: 42 },
+      { type: 'sops', file: 'secrets.yaml', extra: true }
+    ])('rejects invalid configuration %j', async (secretsProvider) => {
+      await expect(environmentSchema.validate(buildEnvironment({ secretsProvider }))).rejects.toThrow();
+    });
+  });
   describe('variable dataType', () => {
     it.each(['string', 'number', 'boolean', 'object'])('validates a variable with dataType %s', async (dataType) => {
       const env = buildEnvironment({ variables: [buildVariable({ dataType })] });

@@ -8,6 +8,7 @@ const { renameEnvironmentExtendsReferences } = require('../utils/environments');
 const { generateUidBasedOnHash, uuid } = require('../utils/common');
 const { decryptStringSafe } = require('../utils/encryption');
 const EnvironmentSecretsStore = require('./env-secrets');
+const { isSopsEnvironment, hydrateEnvironment, saveEnvironmentSecrets, normalizeSecretsProvider } = require('../utils/sops');
 
 const environmentSecretsStore = new EnvironmentSecretsStore();
 
@@ -69,6 +70,12 @@ class GlobalEnvironmentsManager {
       }
     });
 
+    if (environment.secretsProvider && !isSopsEnvironment(environment)) {
+      throw Object.assign(new Error('Unsupported secrets provider'), { code: 'SOPS_ERROR' });
+    }
+    if (isSopsEnvironment(environment)) {
+      return hydrateEnvironment(environment, workspacePath);
+    }
     if (this.envHasSecrets(environment)) {
       const envSecrets = environmentSecretsStore.getEnvSecrets(workspacePath, environment);
       _.each(envSecrets, (secret) => {
@@ -108,7 +115,8 @@ class GlobalEnvironmentsManager {
             const environment = await this.parseEnvironmentFile(filePath, workspacePath);
             environments.push(environment);
           } catch (parseError) {
-            console.error(`Failed to parse environment file ${file}:`, parseError);
+            console.error(`Failed to load environment file ${file}`);
+            if (parseError.code === 'SOPS_ERROR') throw parseError;
           }
         }
       }
@@ -121,7 +129,7 @@ class GlobalEnvironmentsManager {
     }
   }
 
-  async createGlobalEnvironment(workspacePath, { uid, name, variables, color, extends: inheritedGlobalEnvironmentName }) {
+  async createGlobalEnvironment(workspacePath, { uid, name, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider }) {
     try {
       if (!workspacePath) {
         throw new Error('Workspace path is required');
@@ -139,7 +147,7 @@ class GlobalEnvironmentsManager {
         throw new Error(`Environment "${name}" already exists`);
       }
 
-      const environment = {
+      let environment = {
         name: name,
         variables: variables || [],
         color
@@ -148,8 +156,13 @@ class GlobalEnvironmentsManager {
       if (inheritedGlobalEnvironmentName) {
         environment.extends = inheritedGlobalEnvironmentName;
       }
+      if (secretsProvider) {
+        environment.secretsProvider = normalizeSecretsProvider(secretsProvider, workspacePath);
+      }
 
-      if (this.envHasSecrets(environment)) {
+      if (isSopsEnvironment(environment)) {
+        environment = await hydrateEnvironment(environment, workspacePath);
+      } else if (this.envHasSecrets(environment)) {
         environmentSecretsStore.storeEnvSecrets(workspacePath, environment);
       }
 
@@ -159,15 +172,16 @@ class GlobalEnvironmentsManager {
       return {
         uid: generateUidBasedOnHash(environmentFilePath),
         name,
-        variables,
-        color
+        variables: environment.variables,
+        color,
+        ...(environment.secretsProvider ? { secretsProvider: environment.secretsProvider } : {})
       };
     } catch (error) {
       throw error;
     }
   }
 
-  async saveGlobalEnvironment(workspacePath, { environmentUid, variables, color, extends: inheritedGlobalEnvironmentName }) {
+  async saveGlobalEnvironment(workspacePath, { environmentUid, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider, skipSecretsWrite = false }) {
     try {
       if (!workspacePath) {
         throw new Error('Workspace path is required');
@@ -191,8 +205,16 @@ class GlobalEnvironmentsManager {
         const environment = {
           ...savedEnvironment,
           name: envFile.name,
-          variables: variables
+          variables: variables === undefined ? savedEnvironment.variables : variables
         };
+        if (secretsProvider !== undefined) {
+          if (secretsProvider) {
+            environment.secretsProvider = normalizeSecretsProvider(secretsProvider, workspacePath);
+          } else {
+            if (isSopsEnvironment(environment)) throw new Error('SOPS provider cannot be disabled through environment save');
+            delete environment.secretsProvider;
+          }
+        }
 
         if (color !== undefined) {
           environment.color = color;
@@ -202,7 +224,9 @@ class GlobalEnvironmentsManager {
           environment.extends = inheritedGlobalEnvironmentName;
         }
 
-        if (this.envHasSecrets(environment)) {
+        if (isSopsEnvironment(environment)) {
+          if (!skipSecretsWrite) await saveEnvironmentSecrets(environment, workspacePath, savedEnvironment);
+        } else if (this.envHasSecrets(environment)) {
           environmentSecretsStore.storeEnvSecrets(workspacePath, environment);
         }
 
@@ -241,7 +265,7 @@ class GlobalEnvironmentsManager {
       const content = await stringifyEnvironment(environment, { format: 'yml' });
       await writeFile(newFilePath, content);
 
-      if (this.envHasSecrets(environment)) {
+      if (!isSopsEnvironment(environment) && this.envHasSecrets(environment)) {
         const oldEnv = { name: oldName };
         const secrets = environmentSecretsStore.getEnvSecrets(workspacePath, oldEnv);
 

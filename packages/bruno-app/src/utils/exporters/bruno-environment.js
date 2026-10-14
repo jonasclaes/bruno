@@ -1,6 +1,6 @@
 import { buildEnvVariable } from 'utils/environments';
 
-export const exportBrunoEnvironment = async ({ environments, environmentType, filePath, exportFormat = 'folder' }) => {
+export const exportBrunoEnvironment = async ({ environments, environmentType, filePath, exportFormat = 'folder', workspacePath }) => {
   try {
     const { ipcRenderer } = window;
 
@@ -8,7 +8,8 @@ export const exportBrunoEnvironment = async ({ environments, environmentType, fi
       name: environment.name,
       variables: (environment.variables || []).map((envVariable) => buildEnvVariable({ envVariable })),
       color: environment.color ?? undefined,
-      extends: environment.extends ?? undefined
+      extends: environment.extends ?? undefined,
+      ...(environment.secretsProvider ? { secretsProvider: { ...environment.secretsProvider } } : {})
     }));
 
     await ipcRenderer.invoke('renderer:export-environment', {
@@ -16,7 +17,8 @@ export const exportBrunoEnvironment = async ({ environments, environmentType, fi
       environmentType,
       format: 'json',
       filePath,
-      exportFormat
+      exportFormat,
+      ...(workspacePath ? { workspacePath } : {})
     });
   } catch (error) {
     console.error(`Error exporting ${environmentType} environment as .json:`, error);

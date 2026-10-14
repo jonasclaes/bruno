@@ -19,6 +19,32 @@ const exportedEnvironments = async (environments) => {
 };
 
 describe('exportBrunoEnvironment — inheritance', () => {
+  it('passes workspace context when exporting portable CLI descriptors', async () => {
+    const invoke = jest.fn().mockResolvedValue({ filePaths: ['/repo/export/shared.yml'] });
+    window.ipcRenderer = { invoke };
+    await exportBrunoEnvironment({
+      environments: [{ name: 'shared', variables: [], secretsProvider: { type: 'sops', file: 'secrets.json' } }],
+      environmentType: 'global',
+      filePath: '/repo/export',
+      exportFormat: 'yaml-descriptor',
+      workspacePath: '/repo'
+    });
+    expect(invoke).toHaveBeenCalledWith('renderer:export-environment', expect.objectContaining({
+      exportFormat: 'yaml-descriptor', workspacePath: '/repo'
+    }));
+  });
+
+  it('preserves a SOPS file reference without exporting decrypted values', async () => {
+    const [environment] = await exportedEnvironments([{
+      name: 'shared',
+      secretsProvider: { type: 'sops', file: '/repo/secrets.json' },
+      variables: [{ name: 'TOKEN', value: 'decrypted-value', secret: true }]
+    }]);
+    expect(environment.secretsProvider).toEqual({ type: 'sops', file: '/repo/secrets.json' });
+    expect(environment.variables[0].value).toBe('');
+    expect(JSON.stringify(environment)).not.toContain('decrypted-value');
+  });
+
   it('carries the extends reference of an inheriting environment', async () => {
     const [environment] = await exportedEnvironments([{ name: 'dev', variables: [], extends: 'Base' }]);
 

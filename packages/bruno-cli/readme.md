@@ -58,6 +58,22 @@ If you need to limit the trusted CA to a specified set when validating the reque
 bru run request.bru --cacert myCustomCA.pem --ignore-truststore
 ```
 
+## SOPS-backed environment secrets
+
+SOPS is an opt-in secret provider for workspace and global environments. In the desktop environment editor, open **Secrets → Use SOPS for secrets**, then select or create an encrypted file inside a Git repository. Add age recipients or supported SSH public keys and optionally name their owners. Save the settings, then manage secret variables using the existing Secrets table.
+
+Each top-level entry in the encrypted file corresponds to a secret variable. Attaching an existing file imports its secret names; ordinary requests resolve only the environment's declared secrets.
+
+Commit the encrypted JSON or YAML file, its `<filename>.recipients.json` label sidecar, and the workspace environment descriptor. Recipient labels are public display metadata, not access-control rules. SOPS metadata in the encrypted file is the source of truth for recipients; Bruno re-encrypts the file when recipients change.
+
+Run a workspace environment with `bru run --global-env production --workspace-path /path/to/workspace`. For an application-local global environment, select **CLI YAML descriptors** when exporting its environment into the repository, then use `--global-env-file /path/to/environment.yml`. The descriptor's `secretsProvider` contains `type: sops` and `file`, and its secret variables retain `secret: true` without plaintext values. Workspace file references are relative to the workspace root; standalone descriptor references are relative to the descriptor directory.
+
+SOPS is bundled with desktop and CLI distributions. Private keys remain outside the repository. Configure identities through SOPS's standard discovery mechanisms, such as `SOPS_AGE_KEY_FILE` or `SOPS_AGE_SSH_PRIVATE_KEY_FILE`, including in CI. Bruno does not store private keys. Missing keys, failed decryption, and missing declared secrets fail rather than falling back to locally stored values.
+
+For source checkouts, prepare the binary from the repository root with `node scripts/bundle-sops.js --target linux-x64`, substituting `darwin`, `linux`, or `win32` and `x64` or `arm64` for your platform. Packaging prepares binaries automatically and verifies their pinned SHA256 checksums; running requests never downloads executables.
+
+Removing a recipient cannot revoke access to previously decrypted secrets or older Git revisions. Rotate the underlying credentials when revoking a team member's access. Automatic migration of existing local secrets is not provided.
+
 ## Importing Collections
 
 You can import collections from other formats, such as OpenAPI, using the import command:
