@@ -33,12 +33,20 @@ const validateBrunoEnvironment = (env, filePath, fileName) => {
   }
 
   const variables = env.variables.map((envVariable) => buildEnvVariable({ envVariable, withUuid: true }));
+  if (env.secretsProvider !== undefined && (
+    env.secretsProvider?.type !== 'sops'
+    || typeof env.secretsProvider.file !== 'string'
+    || !env.secretsProvider.file.trim()
+  )) {
+    throw new BrunoError('Invalid environment: invalid SOPS provider reference');
+  }
 
   return {
     name,
     variables: dedupeImportedSecrets(variables),
     color: coerceEnvColor(env.color),
     extends: environmentExtendsFrom,
+    ...(env.secretsProvider ? { secretsProvider: { type: 'sops', file: env.secretsProvider.file } } : {}),
     filePath,
     fileName
   };

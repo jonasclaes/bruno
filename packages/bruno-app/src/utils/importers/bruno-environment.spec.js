@@ -9,6 +9,26 @@ const parsedFile = (content, fileName = 'env.json') => ({ content, fileName });
 
 const secret = (name) => ({ name, value: '', type: 'text', enabled: true, secret: true });
 
+describe('importBrunoEnvironment — SOPS', () => {
+  it('retains the encrypted file reference and blanks supplied secret values', () => {
+    const { valid: [environment] } = importBrunoEnvironment([parsedFile({
+      name: 'shared',
+      secretsProvider: { type: 'sops', file: '/repo/secrets.json' },
+      variables: [{ name: 'TOKEN', secret: true, value: 'must-not-import' }]
+    })]);
+    expect(environment.secretsProvider).toEqual({ type: 'sops', file: '/repo/secrets.json' });
+    expect(environment.variables[0].value).toBe('');
+  });
+
+  it('rejects an invalid provider rather than silently using local secrets', () => {
+    const { valid, invalid } = importBrunoEnvironment([parsedFile({
+      name: 'shared', variables: [], secretsProvider: { type: 'sops', file: '' }
+    })]);
+    expect(valid).toEqual([]);
+    expect(invalid[0].error).toMatch(/invalid SOPS provider/);
+  });
+});
+
 describe('importBrunoEnvironment — duplicate secrets', () => {
   it('collapses secrets sharing a name, keeping plain variables untouched', () => {
     const { valid: [environment] } = importBrunoEnvironment([

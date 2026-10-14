@@ -41,13 +41,14 @@ export const globalEnvironmentsSlice = createSlice({
       state.activeGlobalEnvironmentUid = resolvedActiveUid;
     },
     _addGlobalEnvironment: (state, action) => {
-      const { name, uid, variables = [], color, extends: inheritedGlobalEnvironmentName } = action.payload;
+      const { name, uid, variables = [], color, secretsProvider, extends: inheritedGlobalEnvironmentName } = action.payload;
       if (name?.length) {
         state.globalEnvironments.push({
           uid,
           name,
           variables,
           color,
+          ...(secretsProvider ? { secretsProvider } : {}),
           extends: inheritedGlobalEnvironmentName
         });
       }
@@ -80,12 +81,13 @@ export const globalEnvironmentsSlice = createSlice({
       }
     },
     _copyGlobalEnvironment: (state, action) => {
-      const { name, uid, variables, extends: inheritedGlobalEnvironmentName } = action.payload;
+      const { name, uid, variables, secretsProvider, extends: inheritedGlobalEnvironmentName } = action.payload;
       if (name?.length && uid) {
         state.globalEnvironments.push({
           uid,
           name,
           variables,
+          secretsProvider,
           extends: inheritedGlobalEnvironmentName
         });
       }
@@ -154,23 +156,23 @@ const getWorkspaceContext = (state) => {
   return { workspaceUid, workspacePath: workspace?.pathname };
 };
 
-export const addGlobalEnvironment = ({ name, variables = [], color, extends: inheritedGlobalEnvironmentName }) => (dispatch, getState) => {
+export const addGlobalEnvironment = ({ name, variables = [], color, secretsProvider, extends: inheritedGlobalEnvironmentName }) => (dispatch, getState) => {
   return new Promise((resolve, reject) => {
     const uid = uuid();
-    const environment = { name, uid, variables, extends: inheritedGlobalEnvironmentName };
+    const environment = { name, uid, variables, secretsProvider, extends: inheritedGlobalEnvironmentName };
     const { ipcRenderer } = window;
     const state = getState();
     const { workspaceUid, workspacePath } = getWorkspaceContext(state);
 
     environmentSchema
       .validate(environment)
-      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { name, uid, variables, color, extends: inheritedGlobalEnvironmentName, workspaceUid, workspacePath }))
+      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { name, uid, variables, color, secretsProvider, extends: inheritedGlobalEnvironmentName, workspaceUid, workspacePath }))
       .then((result) => {
         const finalUid = result?.uid || uid;
         const finalName = result?.name || name;
         const finalVariables = result?.variables || variables;
         const finalColor = result?.color || color;
-        dispatch(_addGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, color: finalColor, extends: inheritedGlobalEnvironmentName }));
+        dispatch(_addGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, color: finalColor, secretsProvider, extends: inheritedGlobalEnvironmentName }));
         return finalUid;
       })
       .then((finalUid) => dispatch(selectGlobalEnvironment({ environmentUid: finalUid })))
@@ -190,17 +192,17 @@ export const copyGlobalEnvironment = ({ name, environmentUid: baseEnvUid }) => (
     }
     const uid = uuid();
     const inheritedGlobalEnvironmentName = baseEnv.extends;
-    const environment = { uid, name, variables: baseEnv.variables, extends: inheritedGlobalEnvironmentName };
+    const environment = { uid, name, variables: baseEnv.variables, secretsProvider: baseEnv.secretsProvider, extends: inheritedGlobalEnvironmentName };
     const { ipcRenderer } = window;
 
     environmentSchema
       .validate(environment)
-      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { uid, name, variables: baseEnv.variables, extends: inheritedGlobalEnvironmentName, workspaceUid, workspacePath }))
+      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { uid, name, variables: baseEnv.variables, secretsProvider: baseEnv.secretsProvider, extends: inheritedGlobalEnvironmentName, workspaceUid, workspacePath }))
       .then((result) => {
         const finalUid = result?.uid || uid;
         const finalName = result?.name || name;
         const finalVariables = result?.variables || baseEnv.variables;
-        dispatch(_copyGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, extends: inheritedGlobalEnvironmentName }));
+        dispatch(_copyGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, secretsProvider: baseEnv.secretsProvider, extends: inheritedGlobalEnvironmentName }));
       })
       .then(resolve)
       .catch(reject);

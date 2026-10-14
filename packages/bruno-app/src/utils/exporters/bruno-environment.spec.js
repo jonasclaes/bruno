@@ -19,6 +19,17 @@ const exportedEnvironments = async (environments) => {
 };
 
 describe('exportBrunoEnvironment — inheritance', () => {
+  it('preserves a SOPS file reference without exporting decrypted values', async () => {
+    const [environment] = await exportedEnvironments([{
+      name: 'shared',
+      secretsProvider: { type: 'sops', file: '/repo/secrets.json' },
+      variables: [{ name: 'TOKEN', value: 'decrypted-value', secret: true }]
+    }]);
+    expect(environment.secretsProvider).toEqual({ type: 'sops', file: '/repo/secrets.json' });
+    expect(environment.variables[0].value).toBe('');
+    expect(JSON.stringify(environment)).not.toContain('decrypted-value');
+  });
+
   it('carries the extends reference of an inheriting environment', async () => {
     const [environment] = await exportedEnvironments([{ name: 'dev', variables: [], extends: 'Base' }]);
 

@@ -17,7 +17,7 @@ const { hasExecutableTestInScript } = require('../utils/request');
 const { createSkippedFileResults } = require('../utils/run');
 const { sanitizeResultsForReporter } = require('../utils/sanitize-results');
 const { getSystemProxy } = require('@usebruno/requests');
-const { loadEnvironmentFromFile } = require('../utils/environment');
+const { loadEnvironmentFromFile, loadGlobalEnvironmentFromFile } = require('../utils/environment');
 const command = 'run [paths...]';
 const desc = 'Run one or more requests/folders';
 
@@ -117,6 +117,10 @@ const builder = async (yargs) => {
     })
     .option('global-env', {
       describe: 'Global environment name (requires collection to be in a workspace)',
+      type: 'string'
+    })
+    .option('global-env-file', {
+      describe: 'Path to a repository-backed global environment YAML descriptor (SOPS paths are relative to its directory)',
       type: 'string'
     })
     .option('workspace-path', {
@@ -305,6 +309,7 @@ const handler = async function (argv) {
       env,
       envFile,
       globalEnv,
+      globalEnvFile,
       workspacePath,
       envVar,
       globalEnvVar,
@@ -483,6 +488,10 @@ const handler = async function (argv) {
       }
     }
 
+    if (globalEnv && globalEnvFile) {
+      console.error(chalk.red('Use either --global-env or --global-env-file, not both.'));
+      process.exit(constants.EXIT_STATUS.ERROR_INVALID_FILE);
+    }
     if (globalEnv) {
       const findWorkspacePath = (startPath) => {
         let currentPath = startPath;
@@ -527,15 +536,36 @@ const handler = async function (argv) {
       }
 
       try {
-        const { variables: environmentVariables, inheritedVariables: inheritedEnvironmentVariables } = loadEnvironmentFromFile({ filePath: globalEnvFilePath, name: globalEnv });
+        const { variables: environmentVariables, inheritedVariables: inheritedEnvironmentVariables } = await loadGlobalEnvironmentFromFile({
+          filePath: globalEnvFilePath, name: globalEnv, basePath: path.resolve(workspacePath)
+        });
         globalEnvVars = environmentVariables;
         globalEnvFileDescriptor = {
           path: globalEnvFilePath,
           format: 'yml',
+          basePath: path.resolve(workspacePath),
           inheritedEnvironmentVariables
         };
       } catch (err) {
-        console.error(chalk.red(`Failed to parse global environment: ${err.message}`));
+        console.error(chalk.red('Failed to load global environment. Check its descriptor and SOPS configuration.'));
+        process.exit(constants.EXIT_STATUS.ERROR_INVALID_FILE);
+      }
+    }
+    if (globalEnvFile) {
+      const filePath = path.resolve(globalEnvFile);
+      if (!['.yml', '.yaml'].includes(path.extname(filePath).toLowerCase())) {
+        console.error(chalk.red('--global-env-file requires a YAML environment descriptor.'));
+        process.exit(constants.EXIT_STATUS.ERROR_INVALID_FILE);
+      }
+      try {
+        const basePath = path.dirname(filePath);
+        const loaded = await loadGlobalEnvironmentFromFile({ filePath, basePath });
+        globalEnvVars = loaded.variables;
+        globalEnvFileDescriptor = {
+          path: filePath, format: 'yml', basePath, inheritedEnvironmentVariables: loaded.inheritedVariables
+        };
+      } catch {
+        console.error(chalk.red('Failed to load global environment. Check its descriptor and SOPS configuration.'));
         process.exit(constants.EXIT_STATUS.ERROR_INVALID_FILE);
       }
     }

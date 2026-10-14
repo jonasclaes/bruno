@@ -100,6 +100,9 @@ const parseEnvironment = (ymlString: string): BrunoEnvironment => {
     if (externalSecrets) {
       brunoEnvironment.externalSecrets = externalSecrets;
     }
+    if ((ocEnvironment as any).secretsProvider !== undefined) {
+      brunoEnvironment.secretsProvider = (ocEnvironment as any).secretsProvider;
+    }
 
     return brunoEnvironment;
   } catch (error) {

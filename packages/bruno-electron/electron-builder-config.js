@@ -2,6 +2,12 @@ require('dotenv').config({ path: process.env.DOTENV_PATH });
 
 const isBenchmark = process.env.BRUNO_BENCHMARK === 'true';
 
+const sopsResources = (platform) => [{
+  from: `../bruno-common/sops/bin/${platform}-\${arch}`,
+  to: `sops/${platform}-\${arch}`,
+  filter: ['sops', 'sops.exe']
+}];
+
 const config = {
   appId: 'com.usebruno.app',
   productName: isBenchmark ? 'Bruno Benchmark' : 'Bruno',
@@ -18,13 +24,24 @@ const config = {
   },
   extraResources: [
     {
+      from: '../bruno-common/sops/NOTICE',
+      to: 'sops/NOTICE'
+    },
+    {
       from: 'resources/data/sample-collection.json',
       to: 'data/sample-collection.json'
     }
   ],
   files: ['**/*'],
+  beforePack: async (context) => {
+    const { Arch } = require('builder-util');
+    await require('../../scripts/bundle-sops').bundleSops([
+      `${context.electronPlatformName}-${Arch[context.arch]}`
+    ]);
+  },
   afterSign: 'notarize.js',
   mac: {
+    extraResources: sopsResources('darwin'),
     artifactName: '${name}_${version}_${arch}_${os}.${ext}',
     category: 'public.app-category.developer-tools',
     target: [
@@ -58,6 +75,7 @@ const config = {
     ]
   },
   linux: {
+    extraResources: sopsResources('linux'),
     artifactName: '${name}_${version}_${arch}_${os}.${ext}',
     icon: 'resources/icons/png',
     target: [
@@ -101,6 +119,7 @@ const config = {
     ]
   },
   win: {
+    extraResources: sopsResources('win32'),
     artifactName: '${name}_${version}_${arch}_win.${ext}',
     icon: 'resources/icons/win/icon.ico',
     target: [

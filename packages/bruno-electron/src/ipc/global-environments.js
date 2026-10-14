@@ -1,7 +1,11 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { ipcMain } = require('electron');
+const { ipcMain, dialog } = require('electron');
+const sops = require('@usebruno/common/sops');
+const { resolveSecretsFile, normalizeSecretsProvider } = require('../utils/sops');
+const { uuid } = require('../utils/common');
+const { withFileLock } = require('../utils/filesystem');
 const { utils: { jsonToDotenv } } = require('@usebruno/common');
 const { globalEnvironmentsStore } = require('../store/global-environments');
 const { generateUniqueName, sanitizeName, writeFile, isValidDotEnvFilename } = require('../utils/filesystem');
@@ -50,7 +54,98 @@ const migrateActiveGlobalEnvironmentUid = async (workspacePath) => {
 };
 
 const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager) => {
-  ipcMain.handle('renderer:create-global-environment', async (event, { uid, name, variables, color, extends: inheritedGlobalEnvironmentName, workspaceUid, workspacePath }) => {
+  const inspectSecrets = async (file) => {
+    if (!fs.existsSync(file)) return { file, recipients: [], labels: {}, secretNames: [] };
+    const recipients = await sops.getRecipients(file);
+    const labels = await sops.readRecipientLabels(file);
+    const values = await sops.readSecrets(file);
+    return { file, recipients, labels, secretNames: Object.keys(values) };
+  };
+
+  ipcMain.handle('renderer:sops-inspect', async (event, { file, workspacePath }) => {
+    return inspectSecrets(resolveSecretsFile(file, workspacePath));
+  });
+
+  ipcMain.handle('renderer:sops-save', async (event, { file, workspacePath, recipients, labels, secrets }) => {
+    const resolved = resolveSecretsFile(file, workspacePath);
+    if (secrets !== undefined && (!secrets || typeof secrets !== 'object' || Array.isArray(secrets))) {
+      throw new Error('SOPS secrets must be an object');
+    }
+    return withFileLock(resolved, async () => {
+      const existing = fs.existsSync(resolved);
+      if (secrets !== undefined) {
+        await sops.writeSecrets(resolved, secrets, recipients);
+      } else if (!existing) {
+        throw new Error('SOPS secrets file does not exist');
+      }
+      if (existing && recipients !== undefined) await sops.updateRecipients(resolved, recipients);
+      if (labels !== undefined) await sops.writeRecipientLabels(resolved, labels);
+      return inspectSecrets(resolved);
+    });
+  });
+
+  ipcMain.handle('renderer:sops-configure-environment', async (event, {
+    environmentUid, workspacePath, file, recipients, labels
+  }) => {
+    const resolved = resolveSecretsFile(file, workspacePath);
+    if (workspacePath && !workspaceEnvironmentsManager) throw new Error('Workspace environments manager is unavailable');
+    return withFileLock(resolved, async () => {
+      const environments = workspacePath
+        ? (await workspaceEnvironmentsManager.getGlobalEnvironmentsByPath(workspacePath)).globalEnvironments
+        : await globalEnvironmentsStore.getGlobalEnvironments();
+      const environment = environments.find((env) => env.uid === environmentUid);
+      if (!environment) throw new Error('Environment not found');
+      const existing = fs.existsSync(resolved);
+      const values = existing
+        ? await sops.readSecrets(resolved)
+        : Object.fromEntries((environment.variables || []).filter((variable) => variable.secret === true)
+          .map((variable) => [variable.name, variable.value]));
+      const variables = (environment.variables || []).map((variable) => {
+        if (Object.hasOwn(values, variable.name) && variable.secret !== true) {
+          throw new Error('A SOPS secret name conflicts with a non-secret environment variable');
+        }
+        if (variable.secret !== true) return { ...variable };
+        if (!Object.hasOwn(values, variable.name)) {
+          throw new Error('A declared environment secret is missing from the SOPS file');
+        }
+        return { ...variable, value: values[variable.name] };
+      });
+      for (const [name, value] of Object.entries(values)) {
+        if (variables.some((variable) => variable.name === name)) continue;
+        variables.push({
+          uid: uuid(), name, value, type: 'text', enabled: true, secret: true,
+          dataType: value !== null && typeof value === 'object' ? 'object' : typeof value === 'number'
+            ? 'number' : typeof value === 'boolean' ? 'boolean' : 'string'
+        });
+      }
+      const secretsProvider = normalizeSecretsProvider({ type: 'sops', file: resolved }, workspacePath);
+      if (!existing) await sops.writeSecrets(resolved, values, recipients);
+      if (existing && recipients !== undefined) await sops.updateRecipients(resolved, recipients);
+      if (labels !== undefined) await sops.writeRecipientLabels(resolved, labels);
+      const params = { environmentUid, variables, secretsProvider, skipSecretsWrite: true };
+      if (workspacePath) {
+        await workspaceEnvironmentsManager.saveGlobalEnvironmentByPath(workspacePath, params);
+      } else {
+        await globalEnvironmentsStore.saveGlobalEnvironment(params);
+      }
+      return { secretsProvider, variables };
+    });
+  });
+
+  ipcMain.handle('renderer:sops-select-file', async (event, { create } = {}) => {
+    const options = {
+      title: create ? 'Create encrypted secrets file' : 'Select encrypted secrets file',
+      filters: [{ name: 'SOPS secrets', extensions: ['yaml', 'yml', 'json'] }]
+    };
+    const result = create
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showOpenDialog(mainWindow, { ...options, properties: ['openFile'] });
+    if (result.canceled) return null;
+    const file = create ? result.filePath : result.filePaths?.[0];
+    return file ? resolveSecretsFile(file) : null;
+  });
+
+  ipcMain.handle('renderer:create-global-environment', async (event, { uid, name, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider, workspaceUid, workspacePath }) => {
     try {
       // If workspace path provided, use workspace environments manager
       if (workspacePath && workspaceEnvironmentsManager) {
@@ -60,31 +155,31 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
         const sanitizedName = sanitizeName(name);
         const uniqueName = generateUniqueName(sanitizedName, (name) => existingNames.includes(name));
 
-        return await workspaceEnvironmentsManager.addGlobalEnvironmentByPath(workspacePath, { uid, name: uniqueName, variables, color, extends: inheritedGlobalEnvironmentName });
+        return await workspaceEnvironmentsManager.addGlobalEnvironmentByPath(workspacePath, { uid, name: uniqueName, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider });
       }
 
-      const existingGlobalEnvironments = globalEnvironmentsStore.getGlobalEnvironments();
+      const existingGlobalEnvironments = await globalEnvironmentsStore.getGlobalEnvironments();
       const existingNames = existingGlobalEnvironments?.map((env) => env.name) || [];
 
       const sanitizedName = sanitizeName(name);
       const uniqueName = generateUniqueName(sanitizedName, (name) => existingNames.includes(name));
 
-      globalEnvironmentsStore.addGlobalEnvironment({ uid, name: uniqueName, variables, color, extends: inheritedGlobalEnvironmentName });
+      await globalEnvironmentsStore.addGlobalEnvironment({ uid, name: uniqueName, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider });
 
-      return { name: uniqueName, color };
+      return { name: uniqueName, color, ...(secretsProvider ? { secretsProvider } : {}) };
     } catch (error) {
       console.error('Error in renderer:create-global-environment:', error);
       return Promise.reject(error);
     }
   });
 
-  ipcMain.handle('renderer:save-global-environment', async (event, { environmentUid, variables, color, extends: inheritedGlobalEnvironmentName, workspaceUid, workspacePath }) => {
+  ipcMain.handle('renderer:save-global-environment', async (event, { environmentUid, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider, workspaceUid, workspacePath }) => {
     try {
       if (workspacePath && workspaceEnvironmentsManager) {
-        return await workspaceEnvironmentsManager.saveGlobalEnvironmentByPath(workspacePath, { environmentUid, variables, color, extends: inheritedGlobalEnvironmentName });
+        return await workspaceEnvironmentsManager.saveGlobalEnvironmentByPath(workspacePath, { environmentUid, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider });
       }
 
-      globalEnvironmentsStore.saveGlobalEnvironment({ environmentUid, variables, color, extends: inheritedGlobalEnvironmentName });
+      await globalEnvironmentsStore.saveGlobalEnvironment({ environmentUid, variables, color, extends: inheritedGlobalEnvironmentName, secretsProvider });
     } catch (error) {
       console.error('Error in renderer:save-global-environment:', error);
       return Promise.reject(error);
@@ -97,7 +192,7 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
         return await workspaceEnvironmentsManager.saveGlobalEnvironmentExtendsByPath(workspacePath, { environmentUid, extends: inheritedGlobalEnvironmentName });
       }
 
-      globalEnvironmentsStore.saveGlobalEnvironmentExtends({ environmentUid, extends: inheritedGlobalEnvironmentName });
+      await globalEnvironmentsStore.saveGlobalEnvironmentExtends({ environmentUid, extends: inheritedGlobalEnvironmentName });
     } catch (error) {
       console.error('Error in renderer:save-global-environment-extends:', error);
       return Promise.reject(error);
@@ -110,7 +205,7 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
         return await workspaceEnvironmentsManager.renameGlobalEnvironmentByPath(workspacePath, { environmentUid, name });
       }
 
-      globalEnvironmentsStore.renameGlobalEnvironment({ environmentUid, name });
+      await globalEnvironmentsStore.renameGlobalEnvironment({ environmentUid, name });
     } catch (error) {
       console.error('Error in renderer:rename-global-environment:', error);
       return Promise.reject(error);
@@ -127,7 +222,7 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
           globalEnvironmentsStore.setActiveGlobalEnvironmentUidForWorkspace(workspacePath, null);
         }
       } else {
-        globalEnvironmentsStore.deleteGlobalEnvironment({ environmentUid });
+        await globalEnvironmentsStore.deleteGlobalEnvironment({ environmentUid });
       }
     } catch (error) {
       console.error('Error in renderer:delete-global-environment:', error);
@@ -156,7 +251,7 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
         const result = await workspaceEnvironmentsManager.getGlobalEnvironmentsByPath(workspacePath);
         globalEnvironments = result?.globalEnvironments || [];
       } else {
-        globalEnvironments = globalEnvironmentsStore.getGlobalEnvironments() || [];
+        globalEnvironments = (await globalEnvironmentsStore.getGlobalEnvironments()) || [];
       }
 
       const activeGlobalEnvironmentUid = workspacePath
@@ -274,7 +369,7 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
         return await workspaceEnvironmentsManager.updateGlobalEnvironmentColorByPath(workspacePath, { environmentUid, color });
       }
 
-      globalEnvironmentsStore.updateGlobalEnvironmentColor({ environmentUid, color });
+      await globalEnvironmentsStore.updateGlobalEnvironmentColor({ environmentUid, color });
     } catch (error) {
       console.error('Error in renderer:update-global-environment-color:', error);
       return Promise.reject(error);

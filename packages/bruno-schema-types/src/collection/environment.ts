@@ -29,6 +29,7 @@ export interface Environment {
   name: string;
   variables: EnvironmentVariable[];
   externalSecrets?: ExternalSecrets;
+  secretsProvider?: { type: 'sops'; file: string };
   color?: string | null;
   extends?: string | string[] | null;
 }

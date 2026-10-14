@@ -520,6 +520,13 @@ describe('addGlobalEnvironment — inheritance', () => {
     expect(createArgs.extends).toBeUndefined();
     expect(added.extends).toBeUndefined();
   });
+
+  test('an imported SOPS environment retains its provider in IPC and state', async () => {
+    const secretsProvider = { type: 'sops', file: '/repo/secrets.json' };
+    const { createArgs, added } = await addEnvironment({ name: 'shared', variables: [], secretsProvider });
+    expect(createArgs.secretsProvider).toEqual(secretsProvider);
+    expect(added.secretsProvider).toEqual(secretsProvider);
+  });
 });
 
 describe('updateGlobalEnvironments — activeGlobalEnvironmentUid resolution', () => {

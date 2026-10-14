@@ -19,7 +19,7 @@ jest.mock('electron-store', () =>
 
 jest.mock('../global-environments', () => ({
   globalEnvironmentsStore: {
-    getGlobalEnvironments: () => mockGlobalEnvironments,
+    getStoredGlobalEnvironments: () => mockGlobalEnvironments,
     getActiveGlobalEnvironmentUid: () => null,
     setActiveGlobalEnvironmentUidForWorkspace: jest.fn()
   }

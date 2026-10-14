@@ -4,6 +4,7 @@ const chalk = require('chalk');
 const { parseEnvironment } = require('@usebruno/filestore');
 const { getEnvVars } = require('../utils/bru');
 const { resolveEnvironmentInheritance: resolveEnvironmentInheritanceCommon } = require('@usebruno/common').utils;
+const { hydrateEnvironment } = require('@usebruno/common/sops');
 
 /**
  * Parse a Bruno JSON environment object and normalize variables
@@ -36,7 +37,7 @@ const parseEnvFile = (filePath) => {
     return parseEnvironmentJson(JSON.parse(content));
   }
 
-  const format = fileExt === '.yml' ? 'yml' : 'bru';
+  const format = ['.yml', '.yaml'].includes(fileExt) ? 'yml' : 'bru';
   const normalized = format === 'bru' ? content.replace(/\r\n/g, '\n') : content;
   return parseEnvironment(normalized, { format });
 };
@@ -146,9 +147,45 @@ const loadEnvironmentFromFile = ({ filePath, name, resolveInheritance = true }) 
   };
 };
 
+// Hydrate each ancestor independently before resolving inheritance; provider references
+// belong to the declaring file, not to the merged child's metadata.
+const loadGlobalEnvironmentFromFile = async ({ filePath, name, basePath }) => {
+  const targetEnvironment = { ...parseEnvFile(filePath), name: name || environmentNameOf(filePath) };
+  const environments = [];
+  const visited = new Set();
+  const hydrateChain = async (environment) => {
+    if (visited.has(environment.name)) return;
+    visited.add(environment.name);
+    Object.assign(environment, await hydrateEnvironment(environment, basePath));
+    const parents = Array.isArray(environment.extends) ? environment.extends : [environment.extends];
+    for (const parent of parents.filter(Boolean)) {
+      if (typeof parent !== 'string' || path.basename(parent) !== parent || visited.has(parent)) continue;
+      const parentPath = path.join(path.dirname(filePath), `${parent}${path.extname(filePath)}`);
+      if (!fs.existsSync(parentPath)) continue;
+      const ancestor = { ...parseEnvFile(parentPath), name: parent };
+      environments.push(ancestor);
+      await hydrateChain(ancestor);
+    }
+  };
+  await hydrateChain(targetEnvironment);
+  const { missingInheritedEnvironmentName, cyclicInheritancePath, ...environment } = resolveEnvironmentInheritanceCommon({
+    environments,
+    targetEnvironment
+  });
+  warnOnUnresolvedInheritance({ missingInheritedEnvironmentName, cyclicInheritancePath });
+  const variables = getEnvVars(environment);
+  variables.__name__ = targetEnvironment.name;
+  return {
+    variables,
+    inheritedVariables: environment.inheritedVariables || [],
+    ownVariables: environment.variables || []
+  };
+};
+
 module.exports = {
   parseEnvironmentJson,
   loadEnvironments,
   resolveEnvironmentInheritance,
-  loadEnvironmentFromFile
+  loadEnvironmentFromFile,
+  loadGlobalEnvironmentFromFile
 };

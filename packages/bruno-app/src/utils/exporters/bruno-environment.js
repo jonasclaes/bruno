@@ -8,7 +8,8 @@ export const exportBrunoEnvironment = async ({ environments, environmentType, fi
       name: environment.name,
       variables: (environment.variables || []).map((envVariable) => buildEnvVariable({ envVariable })),
       color: environment.color ?? undefined,
-      extends: environment.extends ?? undefined
+      extends: environment.extends ?? undefined,
+      ...(environment.secretsProvider ? { secretsProvider: { ...environment.secretsProvider } } : {})
     }));
 
     await ipcRenderer.invoke('renderer:export-environment', {

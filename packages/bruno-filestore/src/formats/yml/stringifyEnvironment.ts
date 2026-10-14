@@ -78,6 +78,9 @@ const stringifyEnvironment = (environment: BrunoEnvironment): string => {
         variables: (environment.externalSecrets.variables || []).map((variable) => ({ ...variable }))
       };
     }
+    if (environment.secretsProvider !== undefined) {
+      (ocEnvironment as any).secretsProvider = environment.secretsProvider;
+    }
 
     return stringifyYml(ocEnvironment);
   } catch (error) {

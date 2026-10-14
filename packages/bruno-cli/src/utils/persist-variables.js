@@ -1,5 +1,7 @@
 const fs = require('fs');
+const path = require('path');
 const { isEqual } = require('lodash');
+const { hydrateEnvironment, saveEnvironmentSecrets } = require('@usebruno/common/sops');
 const { stringifyEnvironment, stringifyCollection, parseEnvironment } = require('@usebruno/filestore');
 const { getDataTypeFromValue } = require('@usebruno/common').utils;
 const { parseEnvironmentJson } = require('./environment');
@@ -242,6 +244,9 @@ const mergeScriptVarsIntoEnvList = (variables, scriptVarsRaw, options = {}) => {
       // the rotated value would otherwise land on that plain row and reach disk in cleartext. The
       // row becoming a secret is the cost of keeping the value off disk.
       if (v.secret || secretNamesFromOtherEnvironmentFiles.has(v.name)) {
+        if (options.preserveSecretValues) {
+          return applyInferredDataType({ ...v, secret: true, value: scriptVars[v.name] }, scriptVars[v.name]);
+        }
         // The written value is dropped, so a dataType inferred from it would type a value no reader
         // can see — and retype the secret the app holds in its own store. The row keeps the type its
         // file declares.
@@ -263,7 +268,7 @@ const mergeScriptVarsIntoEnvList = (variables, scriptVarsRaw, options = {}) => {
     // An appended secret row is name-only, so there is no value left for a dataType to describe.
     next.push(
       secretNamesFromOtherEnvironmentFiles.has(key)
-        ? markSecretWithEmptyValue(entry)
+        ? (options.preserveSecretValues ? applyInferredDataType({ ...entry, secret: true }, scriptVars[key]) : markSecretWithEmptyValue(entry))
         : applyInferredDataType(entry, scriptVars[key])
     );
   }
@@ -414,6 +419,28 @@ const persistEnvFile = (envFile, scriptVars, options = {}) => {
   // Bru parser expects \n line endings; yml parser is tolerant.
   const sourceForParse = format === 'bru' ? existingRaw.replace(/\r\n/g, '\n') : existingRaw;
   const parsed = parseEnvironment(sourceForParse, { format });
+  if (parsed.secretsProvider !== undefined) {
+    return (async () => {
+      try {
+        const basePath = envFile.basePath || path.dirname(filePath);
+        const hydrated = await hydrateEnvironment(parsed, basePath);
+        const next = {
+          ...hydrated,
+          variables: mergeScriptVarsIntoEnvList(hydrated.variables || [], scriptVars, {
+            ...mergeOptions,
+            preserveSecretValues: true
+          })
+        };
+        await saveEnvironmentSecrets(next, basePath);
+        const content = stringifyEnvironment(next, { format });
+        writeIfChanged(filePath, content, existingRaw);
+      } catch {
+        const error = new Error('Failed to persist SOPS environment secrets.');
+        error.code = 'SOPS_ENVIRONMENT_ERROR';
+        throw error;
+      }
+    })();
+  }
   const mergedVars = mergeScriptVarsIntoEnvList(parsed.variables || [], scriptVars, mergeOptions);
   const next = { ...parsed, variables: mergedVars };
   const content = stringifyEnvironment(next, { format });
@@ -499,13 +526,23 @@ const persistCollectionVars = (collection, scriptCollVars, collectionRootPath) =
 const persistVariableUpdates = (result, { envFile, globalEnvFile, collection, collectionRootPath, envVarOverrides, globalEnvVarOverrides }) => {
   if (!result) return;
   const envOpts = envVarOverrides ? { overrides: envVarOverrides } : undefined;
-  if (result.envVariables) persistEnvFile(envFile, result.envVariables, envOpts);
+  const envPending = result.envVariables ? persistEnvFile(envFile, result.envVariables, envOpts) : undefined;
   // Global env file gets its own leak-guard, seeded from `--global-env-var` overrides: a value
   // injected via the CLI and passed through unchanged never reaches the .yml, but a deliberate
   // `bru.setGlobalEnvVar` write of a different value still persists.
-  const globalEnvOpts = globalEnvVarOverrides ? { overrides: globalEnvVarOverrides } : undefined;
-  if (result.globalEnvironmentVariables) persistEnvFile(globalEnvFile, result.globalEnvironmentVariables, globalEnvOpts);
-  if (result.collectionVariables) persistCollectionVars(collection, result.collectionVariables, collectionRootPath);
+  const persistRemaining = () => {
+    const globalEnvOpts = globalEnvVarOverrides ? { overrides: globalEnvVarOverrides } : undefined;
+    if (result.globalEnvironmentVariables) {
+      const pending = persistEnvFile(globalEnvFile, result.globalEnvironmentVariables, globalEnvOpts);
+      if (pending) {
+        return pending.then(() => {
+          if (result.collectionVariables) persistCollectionVars(collection, result.collectionVariables, collectionRootPath);
+        });
+      }
+    }
+    if (result.collectionVariables) persistCollectionVars(collection, result.collectionVariables, collectionRootPath);
+  };
+  return envPending ? envPending.then(persistRemaining) : persistRemaining();
 };
 
 module.exports = {

@@ -15,6 +15,7 @@ import DeleteEnvironment from '../../DeleteEnvironment';
 import EnvironmentVariables from './EnvironmentVariables';
 import InheritsFrom from 'components/Environments/Common/InheritsFrom';
 import EnvironmentInheritanceWarning from 'components/Environments/Common/EnvironmentInheritanceWarning';
+import SopsSettings from 'components/Environments/Common/SopsSettings';
 import ColorPicker from 'components/ColorPicker';
 import ActionIcon from 'ui/ActionIcon';
 import ResponsiveTabs from 'ui/ResponsiveTabs';
@@ -325,6 +326,7 @@ const EnvironmentDetails = ({ environment, setIsModified, collection, searchQuer
       </div>
 
       <div className="content">
+        {activeTab === 'secrets' && <SopsSettings key={environment.uid} environment={environment} />}
         <EnvironmentVariables
           environment={environment}
           setIsModified={setIsModified}

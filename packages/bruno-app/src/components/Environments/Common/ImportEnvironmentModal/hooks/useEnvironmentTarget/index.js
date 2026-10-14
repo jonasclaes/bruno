@@ -13,6 +13,9 @@ export const useEnvironmentTarget = (type, collection) => {
   const existingNames = useMemo(() => existingEnvironments.map((e) => e.name), [existingEnvironments]);
 
   const saveEnv = useCallback(async (environment, existingEnv) => {
+    if (environment.secretsProvider || existingEnv.secretsProvider) {
+      throw new Error('Import SOPS environments under a new name to avoid overwriting encrypted secrets.');
+    }
     const action = isGlobal
       ? saveGlobalEnvironment({ variables: environment.variables, environmentUid: existingEnv.uid })
       : saveEnvironment(environment.variables, existingEnv.uid, collection.uid);
@@ -41,8 +44,11 @@ export const useEnvironmentTarget = (type, collection) => {
   }, [isGlobal, collection, dispatch]);
 
   const createEnv = useCallback(async (name, environment) => {
+    if (!isGlobal && environment.secretsProvider) {
+      throw new Error('SOPS imports require a workspace or global environment.');
+    }
     const action = isGlobal
-      ? addGlobalEnvironment({ name, variables: environment.variables, color: environment.color, extends: environment.extends })
+      ? addGlobalEnvironment({ name, variables: environment.variables, color: environment.color, extends: environment.extends, ...(environment.secretsProvider ? { secretsProvider: environment.secretsProvider } : {}) })
       : importEnvironment({ name, variables: environment.variables, color: environment.color, extends: environment.extends, collectionUid: collection?.uid });
     await dispatch(action);
   }, [isGlobal, collection, dispatch]);

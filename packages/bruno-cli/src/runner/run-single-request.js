@@ -10,6 +10,7 @@ const { ScriptRuntime, TestRuntime, VarsRuntime, AssertRuntime, formatErrorWithC
 const { stripExtension } = require('../utils/filesystem');
 const { getOptions } = require('../utils/bru');
 const { applyVariableUpdates, persistVariableUpdates } = require('../utils/persist-variables');
+const constants = require('../constants');
 const { makeAxiosInstance } = require('../utils/axios-instance');
 const { refreshExplicitHeaderNames, shouldOmitConnection } = require('@usebruno/common');
 const { addAwsV4Interceptor, resolveAwsV4Credentials } = require('./awsv4auth-helper');
@@ -116,7 +117,7 @@ const runSingleRequest = async function (
   persistPaths = {},
   runAbortSignal = null
 ) {
-  const syncVariableUpdates = (result, currentRequest) => {
+  const syncVariableUpdates = async (result, currentRequest) => {
     if (!result) return;
     applyVariableUpdates(result, {
       envVariables,
@@ -124,10 +125,10 @@ const runSingleRequest = async function (
       globalEnvVars,
       request: currentRequest
     });
-    // Persistence is a side effect — never tank the run for it. In CI, env files may sit on
-    // read-only mounts or the user's shell may lack write permissions; log and continue.
+    // Ordinary persistence remains best-effort for read-only CI mounts. SOPS failures
+    // must abort instead of silently continuing with secrets that were not saved.
     try {
-      persistVariableUpdates(result, {
+      await persistVariableUpdates(result, {
         envFile: persistPaths.envFile,
         globalEnvFile: persistPaths.globalEnvFile,
         collection,
@@ -136,6 +137,11 @@ const runSingleRequest = async function (
         globalEnvVarOverrides: persistPaths.globalEnvVarOverrides
       });
     } catch (err) {
+      if (err.code === 'SOPS_ENVIRONMENT_ERROR') {
+        console.error(chalk.red('Failed to persist SOPS environment secrets. Aborting run.'));
+        process.exit(constants.EXIT_STATUS.ERROR_INVALID_FILE);
+        throw err;
+      }
       console.warn(chalk.yellow(`Warning: failed to persist variable updates: ${err.message}`));
     }
   };
@@ -273,7 +279,7 @@ const runSingleRequest = async function (
           scriptingConfig,
           runSingleRequestByPathname,
           collectionName);
-        syncVariableUpdates(result, request);
+        await syncVariableUpdates(result, request);
         if (result?.nextRequestName !== undefined) {
           nextRequestName = result.nextRequestName;
         }
@@ -328,7 +334,7 @@ const runSingleRequest = async function (
         preRequestTestResults = error?.partialResults?.results || [];
 
         // Persist any variable changes the script made before erroring
-        syncVariableUpdates(error?.partialResults, request);
+        await syncVariableUpdates(error?.partialResults, request);
 
         // Preserve nextRequestName if it was set before the error
         if (error?.partialResults?.nextRequestName !== undefined) {
@@ -772,7 +778,7 @@ const runSingleRequest = async function (
         // Only network-level failures (no response received) reach the onFail handler, matching
         // the desktop app. Variables the handler wrote are synced like any other script write.
         const onFailResult = await executeRequestOnFailHandler(request, err);
-        syncVariableUpdates(onFailResult, request);
+        await syncVariableUpdates(onFailResult, request);
 
         console.log(chalk.red(stripExtension(relativeItemPathname)) + chalk.dim(` (${err.message})`));
         applySentHeadersToRequest(request, err);
@@ -834,7 +840,7 @@ const runSingleRequest = async function (
       );
       // Expressions can invoke bru.setEnvVar / setGlobalEnvVar / setCollectionVar as a side effect,
       // mirroring how the desktop app surfaces these mutations after the vars block.
-      syncVariableUpdates(result, request);
+      await syncVariableUpdates(result, request);
     }
 
     // run post response script
@@ -855,7 +861,7 @@ const runSingleRequest = async function (
           runSingleRequestByPathname,
           collectionName
         );
-        syncVariableUpdates(result, request);
+        await syncVariableUpdates(result, request);
         if (result?.nextRequestName !== undefined) {
           nextRequestName = result.nextRequestName;
         }
@@ -887,7 +893,7 @@ const runSingleRequest = async function (
           }
         ];
 
-        syncVariableUpdates(error?.partialResults, request);
+        await syncVariableUpdates(error?.partialResults, request);
 
         if (error?.partialResults?.nextRequestName !== undefined) {
           nextRequestName = error.partialResults.nextRequestName;
@@ -934,7 +940,7 @@ const runSingleRequest = async function (
           runSingleRequestByPathname,
           collectionName
         );
-        syncVariableUpdates(result, request);
+        await syncVariableUpdates(result, request);
         testResults = get(result, 'results', []);
 
         if (result?.nextRequestName !== undefined) {
@@ -967,7 +973,7 @@ const runSingleRequest = async function (
           }
         ];
 
-        syncVariableUpdates(error?.partialResults, request);
+        await syncVariableUpdates(error?.partialResults, request);
 
         if (error?.partialResults?.nextRequestName !== undefined) {
           nextRequestName = error.partialResults.nextRequestName;
