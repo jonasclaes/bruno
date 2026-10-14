@@ -271,7 +271,7 @@ async function existingText(file) {
   }
 }
 
-async function writeSecretsWithMode(file, values, recipients, merge) {
+async function writeSecretsWithMode(file, values, recipients, merge, removeNames = []) {
   values = safeObject(values, true);
   return withLock(file, async (destination) => {
     const original = await existingText(destination);
@@ -332,11 +332,10 @@ async function writeSecretsWithMode(file, values, recipients, merge) {
           await setValue([key], value);
           parseDocument(await fs.readFile(staged, 'utf8'));
         }
-        if (!merge) {
-          for (const key of Object.keys(parseDocument(original))) {
-            if (key !== 'sops' && !Object.hasOwn(values, key)) {
-              await run(['unset', ...outputFormat, staged, treePath([key])]);
-            }
+        const originalKeys = Object.keys(parseDocument(original)).filter((key) => key !== 'sops');
+        for (const key of merge ? removeNames : originalKeys) {
+          if (originalKeys.includes(key) && !Object.hasOwn(values, key)) {
+            await run(['unset', ...outputFormat, staged, treePath([key])]);
           }
         }
         text = await fs.readFile(staged, 'utf8');
@@ -413,7 +412,7 @@ async function hydrateEnvironment(env, basePath) {
   return { ...env, variables };
 }
 
-async function saveEnvironmentSecrets(env, basePath) {
+async function saveEnvironmentSecrets(env, basePath, previousEnvironment) {
   if (!env?.secretsProvider) return;
   const values = Object.create(null);
   for (const variable of env.variables || []) {
@@ -421,7 +420,18 @@ async function saveEnvironmentSecrets(env, basePath) {
     if (typeof variable.name !== 'string' || forbidden.has(variable.name)) throw failure('Invalid SOPS variable name.');
     values[variable.name] = variable.value;
   }
-  await writeSecretsWithMode(resolveSecretsPath(env.secretsProvider, basePath), values, undefined, true);
+  const file = resolveSecretsPath(env.secretsProvider, basePath);
+  const removeNames = [];
+  if (previousEnvironment?.secretsProvider?.type === 'sops'
+      && resolveSecretsPath(previousEnvironment.secretsProvider, basePath) === file) {
+    for (const variable of previousEnvironment.variables || []) {
+      if (variable.secret !== true) continue;
+      if (typeof variable.name !== 'string' || forbidden.has(variable.name)) throw failure('Invalid SOPS variable name.');
+      treePath([variable.name]);
+      if (!Object.hasOwn(values, variable.name)) removeNames.push(variable.name);
+    }
+  }
+  await writeSecretsWithMode(file, values, undefined, true, [...new Set(removeNames)]);
 }
 
 module.exports = {

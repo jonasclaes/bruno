@@ -234,6 +234,44 @@ integration('official bundled SOPS integration', () => {
     expect(await fs.readdir(directory)).toEqual(['dev.sops.json']);
   });
 
+  test('deletes only removed previous secret declarations and preserves external/shared file keys', async () => {
+    await sops.writeSecrets(file, { owned: 'old', removed: 'delete', unmarked: 'delete', shared: 'keep' }, [first.recipient]);
+    const provider = { type: 'sops', file };
+    const previous = {
+      secretsProvider: provider,
+      variables: [
+        { name: 'owned', value: 'old', secret: true },
+        { name: 'removed', value: 'delete', secret: true },
+        { name: 'unmarked', value: 'delete', secret: true }
+      ]
+    };
+    await sops.writeSecrets(file, {
+      owned: 'old', removed: 'delete', unmarked: 'delete', shared: 'keep', external: 'new-key'
+    });
+    const metadata = JSON.parse(await fs.readFile(file, 'utf8')).sops.age;
+    await sops.saveEnvironmentSecrets({
+      secretsProvider: provider,
+      variables: [
+        { name: 'owned', value: 'updated', secret: true },
+        { name: 'unmarked', value: 'ordinary', secret: false }
+      ]
+    }, undefined, previous);
+    expect(await sops.readSecrets(file)).toEqual({ owned: 'updated', shared: 'keep', external: 'new-key' });
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).sops.age).toEqual(metadata);
+  });
+
+  test('does not delete keys in a new provider file based on declarations from the previous provider', async () => {
+    await sops.writeSecrets(file, { owned: 'old', shared: 'keep' }, [first.recipient]);
+    await sops.saveEnvironmentSecrets({
+      secretsProvider: { type: 'sops', file },
+      variables: [{ name: 'owned', value: 'updated', secret: true }]
+    }, undefined, {
+      secretsProvider: { type: 'sops', file: path.join(directory, 'other.json') },
+      variables: [{ name: 'shared', value: 'previous-file-key', secret: true }]
+    });
+    expect(await sops.readSecrets(file)).toEqual({ owned: 'updated', shared: 'keep' });
+  });
+
   test('serializes concurrent writers and never leaves staging or lock files', async () => {
     await sops.writeSecrets(file, { token: 'initial' }, [first.recipient]);
     await Promise.all([

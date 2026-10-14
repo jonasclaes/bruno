@@ -14,4 +14,4 @@ export function readRecipientLabels(file: string): Promise<Record<string, string
 export function writeRecipientLabels(file: string, labels: Record<string, string>): Promise<void>;
 export function resolveSecretsPath(provider: SecretsProvider, basePath?: string): string;
 export function hydrateEnvironment<T extends Environment>(env: T, basePath?: string): Promise<T>;
-export function saveEnvironmentSecrets(env: Environment, basePath?: string): Promise<void>;
+export function saveEnvironmentSecrets(env: Environment, basePath?: string, previousEnvironment?: Environment): Promise<void>;
